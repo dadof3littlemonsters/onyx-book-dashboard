@@ -1,0 +1,45 @@
+.floating-admin-button {
+  position: fixed;
+  bottom: 2rem;
+  right: 2rem;
+  width: 60px;
+  height: 60px;
+  background: linear-gradient(135deg, #1a1a1a, #333333);
+  border: 1px solid #282828;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #888888;
+  text-decoration: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  transition: all 0.3s ease;
+  z-index: 1000;
+}
+
+.floating-admin-button:hover {
+  color: #ffffff;
+  border-color: #ffffff;
+  background: linear-gradient(135deg, #333333, #555555);
+  transform: translateY(-2px) scale(1.05);
+  box-shadow: 0 12px 32px rgba(255, 255, 255, 0.1);
+}
+
+.floating-admin-button:active {
+  transform: translateY(0) scale(1);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+@media (max-width: 768px) {
+  .floating-admin-button {
+    width: 50px;
+    height: 50px;
+    bottom: 1.5rem;
+    right: 1.5rem;
+  }
+
+  .floating-admin-button svg {
+    width: 20px;
+    height: 20px;
+  }
+}

@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  onyx:
+    build: .
+    container_name: onyx
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - PROWLARR_API_KEY=${PROWLARR_API_KEY}
+      - PROWLARR_URL=${PROWLARR_URL}
+      - QBIT_USER=${QBIT_USER}
+      - QBIT_PASS=${QBIT_PASS}
+      - QBIT_URL=${QBIT_URL}
+      - ADMIN_PIN=${ADMIN_PIN}
+      - ABS_URL=${ABS_URL}
+      - ABS_API_KEY=${ABS_API_KEY}
+      - HARDCOVER_TOKEN=${HARDCOVER_TOKEN}
+    volumes:
+      - ./data:/app/data
+      - /mnt/local/Media/Audiobooks:/app/media/audiobooks:ro
+      - /mnt/local/Media/Ebooks:/app/media/ebooks:ro
+    networks:
+      - saltbox
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=saltbox"
+      - "traefik.http.routers.onyx.rule=Host(`book.delboysden.uk`)"
+      - "traefik.http.routers.onyx.entrypoints=websecure"
+      - "traefik.http.routers.onyx.tls.certresolver=cfdns"
+      - "traefik.http.services.onyx.loadbalancer.server.port=3000"
+
+networks:
+  saltbox:
+    external: true
