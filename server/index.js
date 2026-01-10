@@ -13,6 +13,9 @@ const MetadataAggregator = require('./metadata_aggregator');
 const LibraryScanner = require('./scanner');
 const GenreDiscovery = require('./genre_discovery');
 const TimeoutHandler = require('./utils/timeout');
+const googleBooksApi = require('./services/googleBooksApi');
+const coverResolver = require('./services/coverResolver');
+const discoveryCache = require('./services/discoveryCache');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -39,6 +42,10 @@ app.use(helmet({
 }));
 app.use(cors());
 app.use(express.json());
+app.use((req, res, next) => {
+  console.log(`[REQ] ${req.method} ${req.url}`);
+  next();
+});
 
 // --- Admin auth (PIN-backed signed cookie) ---
 const ADMIN_COOKIE_NAME = 'onyx_admin';
@@ -265,8 +272,10 @@ const mockBooks = {
 
 // API Routes
 app.get('/api/books/:category', async (req, res) => {
+  console.log('[API] Route /api/books/:category hit');
   const { category } = req.params;
   const { search, useDynamic = 'true' } = req.query;
+  console.log(`[API] /api/books/${category} called, search=${search}, useDynamic=${useDynamic}`);
 
   try {
     let books = [];
@@ -278,33 +287,61 @@ app.get('/api/books/:category', async (req, res) => {
       }
       books = mockBooks[category] || [];
     } else {
-      console.log(`Fetching Hardcover books for category: ${category}`);
+      console.log(`Fetching books for category: ${category}`);
+      console.log('GOOGLE_BOOKS_API_KEY present?', !!process.env.GOOGLE_BOOKS_API_KEY);
 
-      switch (category) {
-        case 'romantasy':
-          books = await genreDiscovery.getRomantasyBooks();
-          break;
+      const discoveryGenreMap = {
+        'romantasy': 'romantasy',
+        'fantasy': 'fantasy',
+        'highFantasy': 'fantasy',
+        'dystopian': 'scifi',
+        'sciFi': 'scifi',
+        'cozy': 'cozy',
+        'palateCleanser': 'cozy'
+      };
 
-        // Canonical fantasy row (keep backward compatibility with "highFantasy")
-        case 'fantasy':
-        case 'highFantasy':
-          books = await genreDiscovery.getHighFantasyBooks();
-          break;
-
-        // Canonical dystopian row (keep backward compatibility with "sciFi")
-        case 'dystopian':
-        case 'sciFi':
-          books = await genreDiscovery.getSciFiBooks();
-          break;
-
-        // Cozy row (keep backward compatibility with "palateCleanser")
-        case 'cozy':
-        case 'palateCleanser':
-          books = await genreDiscovery.getCozyBooks();
-          break;
-
-        default:
+      const discoveryGenre = discoveryGenreMap[category];
+      console.log(`Discovery genre mapping: ${category} -> ${discoveryGenre}`);
+      if (discoveryGenre && process.env.GOOGLE_BOOKS_API_KEY) {
+        try {
+          const discoveryBooks = await discoveryCache.getRandomizedBooks(discoveryGenre, 50);
+          books = discoveryBooks.map(book => ({
+            id: book.googleBooksId || book.isbn13 || `google-${Math.random()}`,
+            title: book.title || 'Unknown Title',
+            author: Array.isArray(book.authors) ? book.authors.join(', ') : (book.author || 'Unknown Author'),
+            cover: book.coverUrl || book.thumbnail,
+            synopsis: book.description || '',
+            rating: book.averageRating || null,
+            pages: book.pageCount || null,
+            source: 'google_books'
+          }));
+          console.log(`✅ Using Google Books discovery cache for ${category} (${books.length} books)`);
+        } catch (error) {
+          console.error(`Error fetching from discovery cache for ${category}:`, error);
           books = [];
+        }
+      } else {
+        // Fallback to Hardcover genre discovery
+        console.log(`Falling back to Hardcover genre discovery for ${category}`);
+        switch (category) {
+          case 'romantasy':
+            books = await genreDiscovery.getRomantasyBooks();
+            break;
+          case 'fantasy':
+          case 'highFantasy':
+            books = await genreDiscovery.getHighFantasyBooks();
+            break;
+          case 'dystopian':
+          case 'sciFi':
+            books = await genreDiscovery.getSciFiBooks();
+            break;
+          case 'cozy':
+          case 'palateCleanser':
+            books = await genreDiscovery.getCozyBooks();
+            break;
+          default:
+            books = [];
+        }
       }
 
       // Overlay ownership status (ABS library) without mutating Hardcover truth.
@@ -391,29 +428,16 @@ app.get('/api/search', async (req, res) => {
   }
 
   try {
-    console.log(`Metadata Search Hit: ${q} via Hardcover (Live GraphQL)`);
+    console.log(`[SEARCH] Query: "${q}"`);
 
-    // Live GraphQL Search with title filtering
     const hardcoverQuery = `
-      query SearchBooks($query: String!, $limit: Int!) {
-        books(where: {title: {_ilike: $query}}, limit: $limit) {
-          id
-          title
-          subtitle
-          description
-          image {
-            url
-          }
-          contributions {
-            author {
-              name
-            }
-          }
+      query SearchBooks($query: String!) {
+        search(query: $query) {
+          results
         }
       }
     `;
 
-    // Log auth header for debugging
     TimeoutHandler.logAuthHeader('Hardcover', process.env.HARDCOVER_TOKEN?.trim(), `(search: ${q.trim()})`);
 
     const apiUrl = 'https://api.hardcover.app/v1/graphql';
@@ -427,33 +451,39 @@ app.get('/api/search', async (req, res) => {
       body: JSON.stringify({
         query: hardcoverQuery,
         variables: {
-          query: `%${q.trim()}%`, // Use SQL LIKE pattern
-          limit: 50
+          query: q.trim()
         }
       })
-    }, 5000);
+    }, 10000);
 
     let results = [];
 
     if (hardcoverResponse.ok) {
       const contentType = hardcoverResponse.headers.get('content-type');
       if (!contentType || !contentType.includes('application/json')) {
-        console.error(`[FATAL] Hardcover returned HTML instead of JSON. Check URL: ${hardcoverResponse.url}`);
-        throw new Error('Hardcover returned HTML instead of JSON - invalid endpoint');
+        console.error(`[SEARCH] Hardcover returned HTML instead of JSON`);
+        throw new Error('Hardcover returned HTML - check authentication');
       }
 
       const hardcoverData = await hardcoverResponse.json();
 
-      if (hardcoverData.data?.books) {
-        results = hardcoverData.data.books.map(book => ({
-          id: `hardcover-${book.id}`,
-          title: book.title,
-          subtitle: book.subtitle,
-          author: book.contributions?.[0]?.author?.name || 'Unknown Author',
-          cover: book.image?.url ? `/api/proxy-image?url=${encodeURIComponent(book.image.url)}` : null,
-          synopsis: book.description,
+      if (hardcoverData.errors) {
+        console.error('[SEARCH] GraphQL Errors:', JSON.stringify(hardcoverData.errors, null, 2));
+        throw new Error(`GraphQL error: ${hardcoverData.errors[0]?.message || 'Unknown error'}`);
+      }
+
+      if (hardcoverData.data?.search?.results?.hits && Array.isArray(hardcoverData.data.search.results.hits)) {
+        console.log(`[SEARCH] ✅ Found ${hardcoverData.data.search.results.hits.length} results for "${q}"`);
+
+        results = hardcoverData.data.search.results.hits.slice(0, 50).map(hit => ({
+          id: `hardcover-${hit.document.id}`,
+          title: hit.document.title,
+          subtitle: hit.document.subtitle,
+          author: hit.document.contributions?.[0]?.author?.name || 'Unknown Author',
+          cover: hit.document.image?.url ? `/api/proxy-image?url=${encodeURIComponent(hit.document.image.url)}` : null,
+          synopsis: hit.document.description,
           rating: null,
-          pages: null,
+          pages: hit.document.pages,
           publishDate: null,
           series: null,
           seriesPosition: null,
@@ -461,20 +491,68 @@ app.get('/api/search', async (req, res) => {
           source: 'hardcover',
           category: 'search'
         }));
+      } else {
+        console.log(`[SEARCH] ⚠️ No results for "${q}"`);
       }
     } else {
-      console.error(`[FATAL] 404 on URL: ${apiUrl} - Status: ${hardcoverResponse.status}`);
+      console.error(`[SEARCH] HTTP ${hardcoverResponse.status}: ${apiUrl}`);
     }
 
-    // Hardcover-only strict search - no fallbacks or mock data
-    console.log(`[SEARCH] Found ${results.length} results for "${q}" from Hardcover`);
     res.json(results);
   } catch (error) {
-    console.error('[CRITICAL] Hardcover search error:', error.message);
-    TimeoutHandler.handleError('Search', error, 'Live search temporarily unavailable');
-
-    // Hardcover-only - return empty results on error (no fallbacks)
+    console.error('[SEARCH] Critical error:', error.message);
+    TimeoutHandler.handleError('Search', error, 'Search temporarily unavailable');
     res.json([]);
+  }
+});
+
+// Discovery routes
+app.get('/api/discovery/:genre', async (req, res) => {
+  const { genre } = req.params;
+  const { count = 50 } = req.query;
+
+  const validGenres = [
+    'new_releases', 'hidden_gems', 'popular', 'fantasy',
+    'scifi', 'romantasy', 'cozy', 'awards', 'series_starters'
+  ];
+
+  if (!validGenres.includes(genre)) {
+    return res.status(400).json({
+      error: 'Invalid genre',
+      message: `Valid genres: ${validGenres.join(', ')}`
+    });
+  }
+
+  try {
+    const books = await discoveryCache.getRandomizedBooks(genre, parseInt(count));
+    res.json({
+      success: true,
+      genre,
+      count: books.length,
+      books
+    });
+  } catch (error) {
+    console.error(`Error fetching discovery books for genre ${genre}:`, error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch discovery books'
+    });
+  }
+});
+
+app.get('/api/discovery/stats', async (req, res) => {
+  try {
+    const stats = discoveryCache.getCacheStats();
+    res.json({
+      success: true,
+      stats
+    });
+  } catch (error) {
+    console.error('Error fetching discovery stats:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch discovery stats'
+    });
   }
 });
 
@@ -770,7 +848,9 @@ app.post('/api/admin/clear-caches', requireAdmin, async (req, res) => {
   try {
     await Promise.all([
       metadataAggregator.clearCache(),
-      libraryScanner.clearLibrary()
+      libraryScanner.clearLibrary(),
+      discoveryCache.clearCache(),
+      coverResolver.clearCache()
     ]);
 
     res.json({
@@ -782,6 +862,43 @@ app.post('/api/admin/clear-caches', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to clear caches: ' + error.message
+    });
+  }
+});
+
+app.post('/api/admin/discovery/generate-cache', requireAdmin, async (req, res) => {
+  try {
+    const cache = await discoveryCache.generateDailyCache();
+
+    res.json({
+      success: true,
+      message: 'Discovery cache generated successfully',
+      generatedAt: cache.generatedAt,
+      stats: discoveryCache.getCacheStats()
+    });
+  } catch (error) {
+    console.error('Error generating discovery cache:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate discovery cache: ' + error.message
+    });
+  }
+});
+
+app.post('/api/admin/discovery/clear-cache', requireAdmin, async (req, res) => {
+  try {
+    discoveryCache.clearCache();
+    await discoveryCache.deleteCacheFile();
+
+    res.json({
+      success: true,
+      message: 'Discovery cache cleared successfully'
+    });
+  } catch (error) {
+    console.error('Error clearing discovery cache:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to clear discovery cache: ' + error.message
     });
   }
 });
@@ -860,6 +977,16 @@ app.listen(PORT, () => {
   console.log(`Prowlarr URL: ${process.env.PROWLARR_URL}`);
   console.log(`qBittorrent URL: ${process.env.QBIT_URL}`);
 
+  // Initialize Google Books discovery cache
+  if (process.env.GOOGLE_BOOKS_API_KEY) {
+    console.log('[INIT] Google Books API key found, generating discovery cache...');
+    discoveryCache.generateDailyCache()
+      .then(() => console.log('[INIT] Discovery cache generated successfully'))
+      .catch(err => console.error('[INIT] Discovery cache generation failed:', err));
+  } else {
+    console.warn('[INIT] No Google Books API key - discovery cache disabled');
+  }
+
   // Move initialization to background - non-blocking
   setImmediate(async () => {
     console.log('[INIT] Starting background initialization...');
@@ -905,13 +1032,33 @@ app.listen(PORT, () => {
       console.log(`[INIT] Hardcover token validation failed: ${error.message}`);
     }
 
-    // Force metadata discovery initialization
-    try {
-      console.log('[INIT] Starting metadata discovery initialization...');
-      const genres = await genreDiscovery.getAllGenreBooks();
-      console.log(`[INIT] Metadata discovery complete: ${genres.totalBooks} books across 4 genres`);
-    } catch (error) {
-      console.log(`[INIT] Metadata discovery failed: ${error.message}`);
+    // Force metadata discovery initialization - DISABLED due to Hardcover '_contains' errors
+    // try {
+    //   console.log('[INIT] Starting metadata discovery initialization...');
+    //   const genres = await genreDiscovery.getAllGenreBooks();
+    //   console.log(`[INIT] Metadata discovery complete: ${genres.totalBooks} books across 4 genres`);
+    // } catch (error) {
+    //   console.log(`[INIT] Metadata discovery failed: ${error.message}`);
+    // }
+
+    // Initialize discovery cache if Google Books API key is available
+    if (process.env.GOOGLE_BOOKS_API_KEY) {
+      try {
+        console.log('[INIT] Starting discovery cache initialization...');
+        const cacheStats = discoveryCache.getCacheStats();
+
+        if (!cacheStats.hasCache || discoveryCache.isCacheStale()) {
+          console.log('[INIT] Discovery cache is stale or missing, generating...');
+          await discoveryCache.generateDailyCache();
+          console.log('[INIT] Discovery cache generated successfully');
+        } else {
+          console.log(`[INIT] Discovery cache is fresh (generated: ${cacheStats.generatedAt})`);
+        }
+      } catch (error) {
+        console.log(`[INIT] Discovery cache initialization failed: ${error.message}`);
+      }
+    } else {
+      console.log('[INIT] GOOGLE_BOOKS_API_KEY not set, skipping discovery cache');
     }
 
     console.log('[INIT] Background initialization complete');

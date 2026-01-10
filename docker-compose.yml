@@ -17,6 +17,7 @@ services:
       - ABS_URL=${ABS_URL}
       - ABS_API_KEY=${ABS_API_KEY}
       - HARDCOVER_TOKEN=${HARDCOVER_TOKEN}
+      - GOOGLE_BOOKS_API_KEY=${GOOGLE_BOOKS_API_KEY}
     volumes:
       - ./data:/app/data
       - /mnt/local/Media/Audiobooks:/app/media/audiobooks:ro

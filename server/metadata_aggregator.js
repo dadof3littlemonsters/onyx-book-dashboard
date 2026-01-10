@@ -138,20 +138,9 @@ class MetadataAggregator {
   async fetchHardcoverMetadata(title, author) {
     try {
       const query = `
-        query SearchBooks($query: String!, $limit: Int!) {
-          books(where: { title: { contains: $query } }, limit: $limit) {
-            id
-            title
-            subtitle
-            description
-            image {
-              url
-            }
-            contributions {
-              author {
-                name
-              }
-            }
+        query SearchBooks($query: String!) {
+          search(query: $query) {
+            results
           }
         }
       `;
@@ -166,7 +155,7 @@ class MetadataAggregator {
         },
         body: JSON.stringify({
           query,
-          variables: { query: `${title} ${author}`, limit: 50 }
+          variables: { query: `${title} ${author}` }
         })
       });
 
@@ -183,8 +172,14 @@ class MetadataAggregator {
 
       const data = await response.json();
 
-      if (data.data?.books?.length > 0) {
-        const book = data.data.books[0];
+      if (data.errors) {
+        console.error('[FATAL] Hardcover search errors:', data.errors);
+        return null;
+      }
+
+      if (data.data?.search?.results?.hits?.length > 0) {
+        const hit = data.data.search.results.hits[0];
+        const book = hit.document;
         return {
           source: 'hardcover',
           title: book.title,
@@ -196,7 +191,7 @@ class MetadataAggregator {
           description: book.description,
           genres: null,
           publishDate: null,
-          pages: null,
+          pages: book.pages,
           rating: null,
           reviewsCount: null,
           isbn10: null,

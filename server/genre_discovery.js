@@ -1,6 +1,29 @@
 const MetadataAggregator = require('./metadata_aggregator');
 const TimeoutHandler = require('./utils/timeout');
 
+const GENRE_CONFIG = {
+  romantasy: {
+    tags: ['Romantasy', 'Fantasy Romance'],
+    displayName: 'Romantasy'
+  },
+  fantasy: {
+    tags: ['Fantasy', 'Epic Fantasy', 'High Fantasy'],
+    displayName: 'Fantasy'
+  },
+  scifi: {
+    tags: ['Science Fiction', 'Sci-Fi', 'Space Opera'],
+    displayName: 'Sci-Fi'
+  },
+  dystopian: {
+    tags: ['Dystopian', 'Post-Apocalyptic'],
+    displayName: 'Dystopian'
+  },
+  cozy: {
+    tags: ['Cozy Fantasy', 'Cozy Mystery'],
+    displayName: 'Cozy Reads'
+  }
+};
+
 class GenreDiscovery {
   constructor() {
     this.metadataAggregator = new MetadataAggregator();
@@ -34,6 +57,138 @@ class GenreDiscovery {
       pages: 0,
       source: 'error'
     };
+  }
+
+  async fetchBooksWithGenreTags(tags, limit = 200) {
+    try {
+      console.log(`[GENRE] Fetching books with tags: ${tags.join(', ')}`);
+
+      const tagsJson = { Genre: tags };
+      const query = `
+        query GetBooksByGenreTags($tagsJson: jsonb!, $limit: Int!) {
+          books(
+            where: {
+              cached_tags: { _contains: $tagsJson }
+              rating: { _gte: 3.5 }
+              ratings_count: { _gt: 50 }
+            }
+            order_by: { ratings_count: desc }
+            limit: $limit
+          ) {
+            id
+            title
+            image { url }
+            rating
+            ratings_count
+            cached_tags
+            contributions {
+              author { name }
+            }
+          }
+        }
+      `;
+
+      TimeoutHandler.logAuthHeader('Hardcover', process.env.HARDCOVER_TOKEN?.trim(), `(tags: ${tags.join(', ')})`);
+
+      const apiUrl = 'https://api.hardcover.app/v1/graphql';
+      const response = await TimeoutHandler.fetchWithTimeout(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${process.env.HARDCOVER_TOKEN?.trim() || ''}`,
+        },
+        body: JSON.stringify({
+          query,
+          variables: { tagsJson, limit }
+        })
+      }, 15000);
+
+      if (!response.ok) {
+        console.error(`[FATAL] 404 on URL: ${apiUrl}`);
+        throw new Error(`Hardcover API error: ${response.status}`);
+      }
+
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        console.error(`[FATAL] Hardcover returned HTML instead of JSON. Check URL: ${response.url}`);
+        throw new Error('Hardcover returned HTML instead of JSON - invalid endpoint');
+      }
+
+      const data = await response.json();
+
+      if (data.errors) {
+        console.error('[GENRE] GraphQL errors:', data.errors);
+        throw new Error(`GraphQL errors: ${JSON.stringify(data.errors)}`);
+      }
+
+      if (data.data?.books) {
+        return data.data.books;
+      }
+      return [];
+    } catch (error) {
+      TimeoutHandler.handleError('Hardcover', error, `Genre tags ${tags.join(', ')}`);
+      return [];
+    }
+  }
+
+  async fetchGenreBooks(genreKey) {
+    try {
+      console.log(`[GENRE DEBUG] fetchGenreBooks called with key: ${genreKey}`);
+      const config = GENRE_CONFIG[genreKey];
+      console.log(`[GENRE DEBUG] config:`, config);
+      if (!config) {
+        console.warn(`[GENRE] Unknown genre key: ${genreKey}`);
+        return [];
+      }
+
+      console.log(`[GENRE] Fetching ${config.displayName} books...`);
+
+      // Fetch 200 books for variety
+      const books = await this.fetchBooksWithGenreTags(config.tags, 200);
+      console.log(`[GENRE DEBUG] fetchBooksWithGenreTags returned ${books.length} books`);
+
+      // Filter: rating >= 3.5 (already in query), has cover image, ratings_count > 50 (already in query)
+      const filtered = books.filter(b =>
+        b.rating >= 3.5 &&
+        b.image?.url &&
+        b.ratings_count > 50
+      );
+
+      console.log(`[GENRE] ${config.displayName}: ${filtered.length} books after filtering`);
+
+      // Randomize to prevent same books every time
+      const shuffled = filtered.sort(() => Math.random() - 0.5);
+
+      // Return 50 random books
+      const result = shuffled.slice(0, 50);
+
+      if (result.length < 20) {
+        console.warn(`[GENRE] Low results for ${config.displayName}: ${result.length} books`);
+        // Fallback to popular books could be implemented here
+      }
+
+      console.log(`[GENRE DEBUG] returning ${result.length} books`);
+      return result.map(book => ({
+        id: book.id,
+        title: book.title,
+        subtitle: null,
+        author: book.contributions?.[0]?.author?.name || 'Unknown Author',
+        cover: book.image?.url ? `/api/proxy-image?url=${encodeURIComponent(book.image.url)}` : null,
+        synopsis: null,
+        rating: book.rating,
+        pages: null,
+        publishDate: null,
+        series: null,
+        seriesPosition: null,
+        genres: book.cached_tags?.Genre || [],
+        reviewsCount: book.ratings_count,
+        source: 'hardcover'
+      }));
+    } catch (error) {
+      console.error(`[GENRE ERROR] fetchGenreBooks failed:`, error);
+      return [];
+    }
   }
 
   async fetchHardcoverTrending(genre, limit = 10, useTag = false) {
@@ -282,10 +437,43 @@ class GenreDiscovery {
   }
 
   async fetchHardcoverForRow(tagSlugs, limit = 50) {
+    console.log(`[GENRE] fetchHardcoverForRow called with tagSlugs: ${tagSlugs}`);
+    console.log(`[GENRE] DEBUG: this method is being executed`);
     const allBooks = [];
     for (const tagSlug of tagSlugs) {
       try {
-        const books = await this.fetchHardcoverTrending(tagSlug, Math.ceil(limit / tagSlugs.length), true);
+        let books = [];
+        const config = GENRE_CONFIG[tagSlug];
+        if (config) {
+          console.log(`[GENRE] Using genre tags for ${tagSlug}: ${config.tags.join(', ')}`);
+          const rawBooks = await this.fetchBooksWithGenreTags(config.tags, 200);
+          // Filter and randomize similar to fetchGenreBooks
+          const filtered = rawBooks.filter(b =>
+            b.rating >= 3.5 &&
+            b.image?.url &&
+            b.ratings_count > 50
+          );
+          const shuffled = filtered.sort(() => Math.random() - 0.5);
+          books = shuffled.slice(0, Math.ceil(limit / tagSlugs.length)).map(book => ({
+            id: book.id,
+            title: book.title,
+            subtitle: null,
+            author: book.contributions?.[0]?.author?.name || 'Unknown Author',
+            cover: book.image?.url ? `/api/proxy-image?url=${encodeURIComponent(book.image.url)}` : null,
+            synopsis: null,
+            rating: book.rating,
+            pages: null,
+            publishDate: null,
+            series: null,
+            seriesPosition: null,
+            genres: book.cached_tags?.Genre || [],
+            reviewsCount: book.ratings_count,
+            source: 'hardcover'
+          }));
+        } else {
+          console.log(`[GENRE] No genre config for ${tagSlug}, falling back to tag-based search`);
+          books = await this.fetchHardcoverTrending(tagSlug, Math.ceil(limit / tagSlugs.length), true);
+        }
         allBooks.push(...books);
       } catch (error) {
         console.error('Error fetching tag ' + tagSlug + ':', error.message);
@@ -345,14 +533,12 @@ class GenreDiscovery {
     return this.getCachedOrFetch('romantasy', async () => {
       console.log('[DEBUG] Requesting Hardcover row for: Romantasy');
       console.log('Fetching Romantasy books...');
-
       try {
-        // Hardcover-only strict discovery
         const hardcoverResults = await this.fetchHardcoverForRow(['romantasy'], 50);
-        return hardcoverResults; // Return empty array if no results
+        return hardcoverResults;
       } catch (error) {
         console.error('Error in getRomantasyBooks:', error.message);
-        return []; // Return empty array instead of mock books
+        return [];
       }
     });
   }
@@ -361,14 +547,12 @@ class GenreDiscovery {
     return this.getCachedOrFetch('fantasy', async () => {
       console.log('[DEBUG] Requesting Hardcover row for: Fantasy');
       console.log('Fetching Fantasy books...');
-
       try {
-        // Hardcover-only strict discovery
         const hardcoverResults = await this.fetchHardcoverForRow(['fantasy'], 50);
-        return hardcoverResults; // Return empty array if no results
+        return hardcoverResults;
       } catch (error) {
         console.error('Error in getHighFantasyBooks:', error.message);
-        return []; // Return empty array instead of mock books
+        return [];
       }
     });
   }
@@ -377,14 +561,12 @@ class GenreDiscovery {
     return this.getCachedOrFetch('dystopian', async () => {
       console.log('[DEBUG] Requesting Hardcover row for: Dystopian');
       console.log('Fetching Dystopian books...');
-
       try {
-        // Hardcover-only strict discovery
         const hardcoverResults = await this.fetchHardcoverForRow(['dystopian'], 50);
-        return hardcoverResults; // Return empty array if no results
+        return hardcoverResults;
       } catch (error) {
         console.error('Error in getSciFiBooks:', error.message);
-        return []; // Return empty array instead of mock books
+        return [];
       }
     });
   }
@@ -393,14 +575,12 @@ class GenreDiscovery {
     return this.getCachedOrFetch('cozy', async () => {
       console.log('[DEBUG] Requesting Hardcover row for: Cozy');
       console.log('Fetching Cozy books...');
-
       try {
-        // Hardcover-only strict discovery
         const hardcoverResults = await this.fetchHardcoverForRow(['cozy'], 50);
-        return hardcoverResults; // Return empty array if no results
+        return hardcoverResults;
       } catch (error) {
         console.error('Error in getCozyBooks:', error.message);
-        return []; // Return empty array instead of mock books
+        return [];
       }
     });
   }
