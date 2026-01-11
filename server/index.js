@@ -309,7 +309,7 @@ app.get('/api/books/:category', async (req, res) => {
             id: book.googleBooksId || book.isbn13 || `google-${Math.random()}`,
             title: book.title || 'Unknown Title',
             author: Array.isArray(book.authors) ? book.authors.join(', ') : (book.author || 'Unknown Author'),
-            cover: book.coverUrl || book.thumbnail,
+            thumbnail: book.thumbnail || book.coverUrl,
             synopsis: book.description || '',
             rating: book.averageRating || null,
             pages: book.pageCount || null,
@@ -481,6 +481,8 @@ app.get('/api/search', async (req, res) => {
           subtitle: hit.document.subtitle,
           author: hit.document.contributions?.[0]?.author?.name || 'Unknown Author',
           cover: hit.document.image?.url ? `/api/proxy-image?url=${encodeURIComponent(hit.document.image.url)}` : null,
+          thumbnail: hit.document.image?.url ? `/api/proxy-image?url=${encodeURIComponent(hit.document.image.url)}` : null,
+          coverUrl: hit.document.image?.url ? `/api/proxy-image?url=${encodeURIComponent(hit.document.image.url)}` : null,
           synopsis: hit.document.description,
           rating: null,
           pages: hit.document.pages,
@@ -503,6 +505,44 @@ app.get('/api/search', async (req, res) => {
     console.error('[SEARCH] Critical error:', error.message);
     TimeoutHandler.handleError('Search', error, 'Search temporarily unavailable');
     res.json([]);
+  }
+});
+
+// Admin discovery routes - must come before generic discovery routes
+app.post('/api/admin/discovery/generate-cache', requireAdmin, async (req, res) => {
+  try {
+    const cache = await discoveryCache.generateDailyCache();
+
+    res.json({
+      success: true,
+      message: 'Discovery cache generated successfully',
+      generatedAt: cache.generatedAt,
+      stats: discoveryCache.getCacheStats()
+    });
+  } catch (error) {
+    console.error('Error generating discovery cache:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate discovery cache: ' + error.message
+    });
+  }
+});
+
+app.post('/api/admin/discovery/clear-cache', requireAdmin, async (req, res) => {
+  try {
+    discoveryCache.clearCache();
+    await discoveryCache.deleteCacheFile();
+
+    res.json({
+      success: true,
+      message: 'Discovery cache cleared successfully'
+    });
+  } catch (error) {
+    console.error('Error clearing discovery cache:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to clear discovery cache: ' + error.message
+    });
   }
 });
 
@@ -866,42 +906,6 @@ app.post('/api/admin/clear-caches', requireAdmin, async (req, res) => {
   }
 });
 
-app.post('/api/admin/discovery/generate-cache', requireAdmin, async (req, res) => {
-  try {
-    const cache = await discoveryCache.generateDailyCache();
-
-    res.json({
-      success: true,
-      message: 'Discovery cache generated successfully',
-      generatedAt: cache.generatedAt,
-      stats: discoveryCache.getCacheStats()
-    });
-  } catch (error) {
-    console.error('Error generating discovery cache:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to generate discovery cache: ' + error.message
-    });
-  }
-});
-
-app.post('/api/admin/discovery/clear-cache', requireAdmin, async (req, res) => {
-  try {
-    discoveryCache.clearCache();
-    await discoveryCache.deleteCacheFile();
-
-    res.json({
-      success: true,
-      message: 'Discovery cache cleared successfully'
-    });
-  } catch (error) {
-    console.error('Error clearing discovery cache:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to clear discovery cache: ' + error.message
-    });
-  }
-});
 
 // Audiobookshelf routes
 app.get('/api/abs/users', async (req, res) => {
@@ -954,9 +958,18 @@ app.get('/api/abs/libraries', async (req, res) => {
 
 // Serve static files from React build in production
 if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, '../client/build')));
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/')) {
+      return next();
+    }
+    express.static(path.join(__dirname, '../client/build'))(req, res, next);
+  });
 
   app.get('*', (req, res) => {
+    // Skip API routes - they should have been handled by now
+    if (req.path.startsWith('/api/')) {
+      return res.status(404).json({ error: 'API endpoint not found' });
+    }
     res.sendFile(path.join(__dirname, '../client/build/index.html'));
   });
 } else {
@@ -1047,13 +1060,14 @@ app.listen(PORT, () => {
         console.log('[INIT] Starting discovery cache initialization...');
         const cacheStats = discoveryCache.getCacheStats();
 
-        if (!cacheStats.hasCache || discoveryCache.isCacheStale()) {
-          console.log('[INIT] Discovery cache is stale or missing, generating...');
-          await discoveryCache.generateDailyCache();
-          console.log('[INIT] Discovery cache generated successfully');
-        } else {
-          console.log(`[INIT] Discovery cache is fresh (generated: ${cacheStats.generatedAt})`);
-        }
+// DISABLED:         if (!cacheStats.hasCache || discoveryCache.isCacheStale()) {
+// DISABLED:           console.log('[INIT] Discovery cache is stale or missing, generating...');
+// DISABLED:           await discoveryCache.generateDailyCache();
+// DISABLED:           console.log('[INIT] Discovery cache generated successfully');
+// DISABLED:         } else {
+// DISABLED:           console.log(`[INIT] Discovery cache is fresh (generated: ${cacheStats.generatedAt})`);
+// DISABLED:         }
+        console.log('[INIT] Discovery cache initialization skipped (cache generation disabled)');
       } catch (error) {
         console.log(`[INIT] Discovery cache initialization failed: ${error.message}`);
       }

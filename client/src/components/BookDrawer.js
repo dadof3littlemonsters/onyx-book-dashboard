@@ -8,6 +8,21 @@ const BookDrawer = ({ book, isOpen, onClose, onRequest }) => {
 
   if (!isOpen || !book) return null;
 
+  const getCoverSrc = (cover) => {
+    if (!cover) return null;
+    // If server already returns a proxied path, keep it
+    if (typeof cover === 'string' && cover.startsWith('/api/proxy')) return cover;
+    // Google Books images don't need proxying (CORS friendly)
+    if (typeof cover === 'string' && cover.includes('books.google.com')) {
+      return cover;
+    }
+    // Only proxy other remote URLs (Hardcover hotlink protection)
+    if (typeof cover === 'string' && cover.startsWith('http')) {
+      return `/api/proxy-image?url=${encodeURIComponent(cover)}`;
+    }
+    return cover;
+  };
+
   const handleRequest = () => {
     if (!requestAudiobook && !requestEbook) {
       alert('Please select at least one format (Audiobook or Ebook)');
@@ -36,7 +51,23 @@ const BookDrawer = ({ book, isOpen, onClose, onRequest }) => {
         <div className="drawer-content">
           <div className="book-details">
             <div className="book-cover-large">
-              <img src={book.cover} alt={book.title} />
+              {getCoverSrc(book.cover || book.coverUrl || book.thumbnail) ? (
+                <img src={getCoverSrc(book.cover || book.coverUrl || book.thumbnail)} alt={book.title} />
+              ) : (
+                <div className="book-cover-placeholder" style={{
+                  width: '100%',
+                  height: '300px',
+                  backgroundColor: '#f0f0f0',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '48px',
+                  fontWeight: 'bold',
+                  color: '#666'
+                }}>
+                  {book.title?.split(/\s+/).slice(0, 2).map(w => w[0]?.toUpperCase()).join('') || '📚'}
+                </div>
+              )}
             </div>
 
             <div className="book-meta">
