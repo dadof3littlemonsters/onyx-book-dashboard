@@ -295,9 +295,12 @@ app.get('/api/books/:category', async (req, res) => {
         'fantasy': 'fantasy',
         'highFantasy': 'fantasy',
         'dystopian': 'scifi',
+        'scifi': 'scifi',
         'sciFi': 'scifi',
         'cozy': 'cozy',
-        'palateCleanser': 'cozy'
+        'palateCleanser': 'cozy',
+        'popular': 'popular',
+        'hidden_gems': 'hidden_gems'
       };
 
       const discoveryGenre = discoveryGenreMap[category];
@@ -1060,14 +1063,13 @@ app.listen(PORT, () => {
         console.log('[INIT] Starting discovery cache initialization...');
         const cacheStats = discoveryCache.getCacheStats();
 
-// DISABLED:         if (!cacheStats.hasCache || discoveryCache.isCacheStale()) {
-// DISABLED:           console.log('[INIT] Discovery cache is stale or missing, generating...');
-// DISABLED:           await discoveryCache.generateDailyCache();
-// DISABLED:           console.log('[INIT] Discovery cache generated successfully');
-// DISABLED:         } else {
-// DISABLED:           console.log(`[INIT] Discovery cache is fresh (generated: ${cacheStats.generatedAt})`);
-// DISABLED:         }
-        console.log('[INIT] Discovery cache initialization skipped (cache generation disabled)');
+        if (!cacheStats.hasCache || discoveryCache.isCacheStale()) {
+          console.log('[INIT] Discovery cache is stale or missing, generating...');
+          await discoveryCache.generateDailyCache();
+          console.log('[INIT] Discovery cache generated successfully');
+        } else {
+          console.log(`[INIT] Discovery cache is fresh (generated: ${cacheStats.generatedAt})`);
+        }
       } catch (error) {
         console.log(`[INIT] Discovery cache initialization failed: ${error.message}`);
       }

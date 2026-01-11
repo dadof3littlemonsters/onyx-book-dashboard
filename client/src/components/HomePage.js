@@ -158,8 +158,10 @@ const HomePage = () => {
   const categories = [
     { name: 'Romantasy', key: 'romantasy' },
     { name: 'Fantasy', key: 'fantasy' },
-    { name: 'Dystopian', key: 'dystopian' },
-    { name: 'Cozy', key: 'cozy' }
+    { name: 'Sci-Fi', key: 'scifi' },
+    { name: 'Cozy', key: 'cozy' },
+    { name: 'Popular Right Now', key: 'popular' },
+    { name: 'Hidden Gems', key: 'hidden_gems' }
   ];
 
   return (

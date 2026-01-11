@@ -30,8 +30,8 @@ class DiscoveryCache {
         filter: (book) => this.isHiddenGem(book)
       },
       popular: {
-        query: 'fiction',
-        orderBy: 'newest',
+        query: 'subject:fantasy',
+        orderBy: 'relevance',
         filter: null
       },
       fantasy: {
@@ -139,6 +139,52 @@ class DiscoveryCache {
     const rating = book.averageRating || 0;
     const ratingsCount = book.ratingsCount || 0;
     return rating >= 4.0 && ratingsCount < 1000;
+  }
+
+  isPopularBook(book) {
+    // Filter for contemporary bestsellers and popular reads
+    const rating = book.averageRating || 0;
+    const ratingsCount = book.ratingsCount || 0;
+
+    // Must have a title and author
+    if (!book.title || !book.author) return false;
+
+    // Must have published date
+    if (!book.publishedDate) return false;
+
+    // Must be published 2000 or later for contemporary feel
+    const published = this.parseDate(book.publishedDate);
+    if (!published) return false;
+
+    const cutoffDate = new Date('2000-01-01');
+    if (published < cutoffDate) return false;
+
+    // Must have some ratings to indicate popularity (relaxed)
+    if (ratingsCount < 10) return false;
+
+    // Must have decent rating
+    if (rating < 3.5) return false;
+
+    // Exclude academic/reference books by title patterns
+    const title = book.title.toLowerCase();
+    const excludePatterns = [
+      'das science fiction',
+      'analysis of',
+      'studies in',
+      'handbook',
+      'reference',
+      'guide to',
+      'introduction to',
+      'history of',
+      'companion to',
+      'encyclopedia'
+    ];
+
+    if (excludePatterns.some(pattern => title.includes(pattern))) {
+      return false;
+    }
+
+    return true;
   }
 
   isSeriesStarter(book) {
