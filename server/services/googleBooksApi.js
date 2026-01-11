@@ -2,13 +2,33 @@ const axios = require('axios');
 
 class GoogleBooksApi {
   constructor() {
-    this.apiKey = process.env.GOOGLE_BOOKS_API_KEY;
+    // Support multiple API keys with automatic failover
+    this.apiKeys = [
+      process.env.GOOGLE_BOOKS_API_KEY,
+      process.env.GOOGLE_BOOKS_API_KEY_2
+    ].filter(Boolean); // Remove undefined keys
+    
+    this.currentKeyIndex = 0;
+    this.apiKey = this.apiKeys[0];
+    
     this.baseUrl = 'https://www.googleapis.com/books/v1';
     this.requestTimeout = 15000;
     this.minRequestDelay = 500;
     this.lastRequestTime = 0;
     this.maxRetries = 3;
     this.initialRetryDelay = 1000;
+    
+    console.log(`[GoogleBooks] Initialized with ${this.apiKeys.length} API key(s)`);
+  }
+
+  rotateApiKey() {
+    if (this.apiKeys.length > 1) {
+      this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
+      this.apiKey = this.apiKeys[this.currentKeyIndex];
+      console.log(`[GoogleBooks] Rotated to API key #${this.currentKeyIndex + 1}`);
+      return true;
+    }
+    return false;
   }
 
   sleep(ms) {
@@ -57,8 +77,14 @@ class GoogleBooksApi {
         this.lastRequestTime = Date.now();
 
         if (error.response && error.response.status === 429) {
+          console.log(`[GoogleBooks] Rate limited (429) on key #${this.currentKeyIndex + 1}`);
+          if (this.rotateApiKey()) {
+            console.log(`[GoogleBooks] Retrying immediately with new key...`);
+            retry--; // Don't count this as a retry
+            continue;
+          }
           const retryDelay = this.initialRetryDelay * Math.pow(2, retry);
-          console.log(`[GoogleBooks] Rate limited (429), retry ${retry + 1}/${this.maxRetries} in ${retryDelay}ms...`);
+          console.log(`[GoogleBooks] No more keys available, retry ${retry + 1}/${this.maxRetries} in ${retryDelay}ms...`);
           await this.sleep(retryDelay);
           continue;
         }
@@ -176,6 +202,11 @@ class GoogleBooksApi {
       thumbnail = volumeInfo.imageLinks.thumbnail ||
                  volumeInfo.imageLinks.smallThumbnail ||
                  volumeInfo.imageLinks.medium;
+
+      // Convert HTTP to HTTPS for mixed content prevention
+      if (thumbnail && thumbnail.startsWith('http://')) {
+        thumbnail = thumbnail.replace('http://', 'https://');
+      }
     }
 
     return {

@@ -6,7 +6,11 @@ const BookRow = ({ category, books, onBookSelect }) => {
     if (!cover) return null;
     // If server already returns a proxied path, keep it
     if (typeof cover === 'string' && cover.startsWith('/api/proxy')) return cover;
-    // Only proxy remote URLs (Hardcover hotlink protection)
+    // Google Books images don't need proxying (CORS friendly)
+    if (typeof cover === 'string' && cover.includes('books.google.com')) {
+      return cover;
+    }
+    // Only proxy other remote URLs (Hardcover hotlink protection)
     if (typeof cover === 'string' && cover.startsWith('http')) {
       return `/api/proxy-image?url=${encodeURIComponent(cover)}`;
     }
@@ -59,8 +63,8 @@ const BookRow = ({ category, books, onBookSelect }) => {
             onClick={() => onBookSelect(book)}
           >
             <div className="book-cover">
-              {getCoverSrc(book.cover) ? (
-                <img src={getCoverSrc(book.cover)} alt={book.title} loading="lazy" />
+              {getCoverSrc(book.coverUrl || book.thumbnail) ? (
+                <img src={getCoverSrc(book.coverUrl || book.thumbnail)} alt={book.title} loading="lazy" />
               ) : (
                 <div className="book-cover-placeholder" aria-label={book.title}>
                   {getInitials(book.title)}
