@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, User, LogOut } from 'lucide-react';
+import { Search, User, LogOut, Menu, Settings } from 'lucide-react';
 import BookRow from './BookRow';
 import BookDrawer from './BookDrawer';
 import UserSelector from './UserSelector';
@@ -12,6 +12,7 @@ const HomePage = () => {
   const [searchResults, setSearchResults] = useState([]);
   const [selectedUser, setSelectedUser] = useState(null);
   const [isUserSelectorOpen, setIsUserSelectorOpen] = useState(false);
+  const [isBurgerMenuOpen, setIsBurgerMenuOpen] = useState(false);
 
   useEffect(() => {
     const timeoutId = setTimeout(() => {
@@ -48,6 +49,20 @@ const HomePage = () => {
       setIsUserSelectorOpen(true);
     }
   }, []);
+
+  // Close burger menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (isBurgerMenuOpen && !event.target.closest('.burger-menu-container')) {
+        setIsBurgerMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isBurgerMenuOpen]);
 
   const handleBookSelect = (book) => {
     setSelectedBook(book);
@@ -116,6 +131,28 @@ const HomePage = () => {
     localStorage.removeItem('onyx-has-visited');
     setSelectedUser(null);
     setIsUserSelectorOpen(true);
+    setIsBurgerMenuOpen(false);
+  };
+
+  const handleLogoClick = () => {
+    setSearchQuery('');
+    setSearchResults([]);
+    setSelectedBook(null);
+    setIsDrawerOpen(false);
+    setIsBurgerMenuOpen(false);
+  };
+
+  const handleBurgerMenuToggle = () => {
+    setIsBurgerMenuOpen(!isBurgerMenuOpen);
+  };
+
+  const closeBurgerMenu = () => {
+    setIsBurgerMenuOpen(false);
+  };
+
+  const handleAdminClick = () => {
+    window.location.href = '/admin';
+    setIsBurgerMenuOpen(false);
   };
 
   const categories = [
@@ -129,8 +166,9 @@ const HomePage = () => {
     <div className="app">
       <header className="header">
         <div className="header-content">
-          <h1 className="logo">ONYX</h1>
-          <div className="search-container">
+          <h1 className="logo" onClick={handleLogoClick}>ONYX</h1>
+
+          <div className="search-container-centered">
             <Search className="search-icon" size={20} />
             <input
               type="text"
@@ -140,21 +178,44 @@ const HomePage = () => {
               className="search-input"
             />
           </div>
+
           {selectedUser ? (
-            <div className="user-info-header">
-              <span className="user-greeting">Welcome, {selectedUser.username}</span>
-              <button onClick={handleChangeUser} className="change-user-button" title="Switch User">
-                <User size={18} />
-              </button>
-              <button onClick={handleLogout} className="logout-button" title="Logout">
-                <LogOut size={18} />
-              </button>
+            <div className="header-right">
+              <span className="username">{selectedUser.username}</span>
+              <div className="burger-menu-container">
+                <button onClick={handleBurgerMenuToggle} className="burger-menu-button">
+                  <Menu size={20} />
+                </button>
+                {isBurgerMenuOpen && (
+                  <>
+                    <div className="burger-menu-overlay" onClick={closeBurgerMenu}></div>
+                    <div className="burger-menu">
+                      <button onClick={handleChangeUser} className="burger-menu-item">
+                        <User size={18} />
+                        <span>Switch User</span>
+                      </button>
+                      <button onClick={handleLogout} className="burger-menu-item">
+                        <LogOut size={18} />
+                        <span>Logout</span>
+                      </button>
+                      {selectedUser.username.toLowerCase() === 'craig' && (
+                        <button onClick={handleAdminClick} className="burger-menu-item">
+                          <Settings size={18} />
+                          <span>Admin</span>
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           ) : (
-            <button onClick={() => setIsUserSelectorOpen(true)} className="select-user-button">
-              <User size={18} />
-              <span>Who are you?</span>
-            </button>
+            <div className="header-right">
+              <button onClick={() => setIsUserSelectorOpen(true)} className="select-user-button">
+                <User size={18} />
+                <span>Who are you?</span>
+              </button>
+            </div>
           )}
         </div>
       </header>
