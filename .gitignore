@@ -114,4 +114,5 @@ temp/
 
 # Onyx specific
 onyx_patch_root.zip
-final_verify.js
+final_verify.jsONYX_TECHNICAL_REFERENCE_POPULATED.md
+populate_technical_reference.py
