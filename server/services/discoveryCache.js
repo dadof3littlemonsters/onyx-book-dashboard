@@ -2,6 +2,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const googleBooksApi = require('./googleBooksApi');
 const coverResolver = require('./coverResolver');
+const aiBookCurator = require('./aiBookCurator');
 
 class DiscoveryCache {
   constructor() {
@@ -9,6 +10,7 @@ class DiscoveryCache {
     this.cacheFile = path.join(this.dataDir, 'discovery_cache.json');
     this.cache = null;
     this.lastGenerated = null;
+    this.isGenerating = false;
     this.genreMappings = this.getGenreMappings();
     this.awardsIsbns = this.getAwardsIsbns();
   }
@@ -19,51 +21,38 @@ class DiscoveryCache {
 
   getGenreMappings() {
     return {
-      new_releases: {
-        query: 'fiction',
-        orderBy: 'newest',
-        filter: (book) => this.isRecentBook(book, 3)
-      },
-      hidden_gems: {
-        query: 'subject:fiction',
-        orderBy: 'relevance',
-        filter: (book) => this.isHiddenGem(book)
-      },
-      popular: {
-        query: 'subject:fantasy',
-        orderBy: 'relevance',
-        filter: null
+      romantasy: {
+        aiPrompt: aiBookCurator.GENRE_PROMPTS.romantasy
       },
       fantasy: {
-        query: 'subject:fantasy',
-        orderBy: 'relevance',
-        filter: null
+        aiPrompt: aiBookCurator.GENRE_PROMPTS.fantasy
+      },
+      booktok_trending: {
+        aiPrompt: aiBookCurator.GENRE_PROMPTS.booktok_trending
+      },
+      popular: {
+        aiPrompt: aiBookCurator.GENRE_PROMPTS.popular
+      },
+      new_releases: {
+        aiPrompt: aiBookCurator.GENRE_PROMPTS.new_releases
+      },
+      hidden_gems: {
+        aiPrompt: aiBookCurator.GENRE_PROMPTS.hidden_gems
+      },
+      action_adventure: {
+        aiPrompt: aiBookCurator.GENRE_PROMPTS.action_adventure
       },
       scifi: {
-        query: 'subject:science+fiction',
-        orderBy: 'relevance',
-        filter: null
+        aiPrompt: aiBookCurator.GENRE_PROMPTS.scifi
       },
-      romantasy: {
-        query: 'subject:fantasy+romance',
-        orderBy: 'relevance',
-        filter: null
+      dark_fantasy: {
+        aiPrompt: aiBookCurator.GENRE_PROMPTS.dark_fantasy
       },
-      cozy: {
-        query: 'subject:cozy+mystery',
-        orderBy: 'relevance',
-        filter: null
+      enemies_to_lovers: {
+        aiPrompt: aiBookCurator.GENRE_PROMPTS.enemies_to_lovers
       },
-      awards: {
-        query: null,
-        orderBy: null,
-        filter: null,
-        isbns: this.awardsIsbns
-      },
-      series_starters: {
-        query: 'subject:fiction',
-        orderBy: 'relevance',
-        filter: (book) => this.isSeriesStarter(book)
+      dragons: {
+        aiPrompt: aiBookCurator.GENRE_PROMPTS.dragons
       }
     };
   }
@@ -196,6 +185,23 @@ class DiscoveryCache {
   }
 
   async generateDailyCache() {
+    if (this.isGenerating) {
+      console.log('[DiscoveryCache] Cache generation already in progress, skipping...');
+      // Wait for the existing generation to finish? 
+      // For now, just return existing cache (even if stale) or empty if nothing.
+      if (this.cache) return this.cache;
+
+      // If we have absolutely nothing and generation is running, we might return empty or wait.
+      // Let's protect against thundering herd by waiting a bit if we have no cache.
+      if (!this.cache) {
+        console.log('[DiscoveryCache] No cache available and generation in progress, waiting...');
+        await this.sleep(2000);
+        return this.cache || { genres: {} }; // Return whatever we found after wait
+      }
+      return this.cache;
+    }
+
+    this.isGenerating = true;
     console.log('[DiscoveryCache] Starting daily cache generation...');
     const startTime = Date.now();
 
@@ -214,7 +220,12 @@ class DiscoveryCache {
 
         if (genreKey === 'awards') {
           books = await this.fetchAwardsBooks(config.isbns);
+        } else if (config.aiPrompt) {
+          // AI-powered curation
+          console.log(`[DiscoveryCache] Using AI curation for ${genreKey}`);
+          books = await aiBookCurator.generateAndEnrich(config.aiPrompt);
         } else {
+          // Fallback to Google Books API (for backward compatibility)
           const query = config.query;
           books = await googleBooksApi.fetchBooksBySubject(query, 40, config.orderBy || 'relevance');
 
@@ -239,9 +250,11 @@ class DiscoveryCache {
       const elapsed = Date.now() - startTime;
       console.log(`[DiscoveryCache] Daily cache generation completed in ${elapsed}ms`);
 
+      this.isGenerating = false;
       return cache;
     } catch (error) {
       console.error('[DiscoveryCache] Error generating daily cache:', error);
+      this.isGenerating = false;
       throw error;
     }
   }

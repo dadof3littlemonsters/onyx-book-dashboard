@@ -1,0 +1,17 @@
+# CRITICAL PROJECT RULES
+
+## 1. The "Tight Fucker" Infrastructure
+- **Target:** Ubuntu VPS running Docker Compose.
+- **Constraint:** NO local development assumptions. Use internal container networking (e.g., `http://server:3000`, not `localhost`).
+- **Files:** NEVER delete or modify `docker-compose.yml` without explicit permission.
+
+## 2. Coding Standards
+- **Language:** JavaScript (ES6+) or TypeScript (if configured).
+- **Frontend:** Tailwind CSS. No custom CSS files unless necessary.
+- **Memory:** If I say "Deploy", I mean "SSH into VPS and pull changes," NOT "Deploy to Vercel".
+
+## 3. Workflow Protocol
+- **Architect (Gemini):** Do NOT output a full plan immediately. Ask 3 clarifying questions first.
+- **Builder (DeepSeek):** Verify builds (`npm run build`) before saying "Task Done".
+- **Sense Check (Kimi):** Be ruthless. If you see a security flaw, scream about it.
+- **Reviewer (Claude):** Focus on bugs and security. Do not suggest feature creep.

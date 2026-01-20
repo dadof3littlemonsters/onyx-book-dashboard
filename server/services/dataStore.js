@@ -48,6 +48,15 @@ class DataStore {
     }
   }
 
+  async getRequestById(requestId) {
+    try {
+      const requests = await this.getRequests();
+      return requests.find(r => r.id === requestId);
+    } catch (error) {
+      console.error('Error getting request by ID:', error);
+      return null;
+    }
+  }
 
   async addRequest(request) {
     try {

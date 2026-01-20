@@ -19,7 +19,7 @@ Add AI-curated book recommendations to Onyx homepage so family members can disco
 
 ### Core Infrastructure
 - ✅ Onyx frontend (Next.js) deployed and working
-- ✅ Onyx backend (Node.js/Express) with API routing
+- ✅ Onyx backend (FastAPI) with API routing
 - ✅ Audiobookshelf integration for library management
 - ✅ Prowlarr + qBittorrent automation pipeline complete (not fully tested end-to-end)
 - ✅ Traefik reverse proxy (Saltbox standard)
@@ -40,27 +40,10 @@ Add AI-curated book recommendations to Onyx homepage so family members can disco
 ## 🚧 What's In Progress
 
 ### AI Recommendations Feature
-- ✅ Implemented `/api/recommendations` endpoint with DeepSeek API integration
-- ✅ SQLite caching system with 24-hour TTL implemented
-- ✅ 11 genre categories configured including:
-  - Romantasy
-  - Fantasy
-  - BookTok Trending
-  - Popular
-  - New Releases
-  - Hidden Gems
-  - Action & Adventure
-  - Sci-Fi
-  - Dark Fantasy
-  - Enemies to Lovers
-  - Dragons
-- ✅ Multi-source metadata enrichment:
-  - DeepSeek API for AI curation
-  - Google Books API for metadata
-  - Hardcover API for additional data
-- ✅ Cover image resolution system
-- ✅ Retry logic and error handling
-- ✅ 30-minute genre discovery cache
+- 🔨 Designing `/api/recommendations` endpoint architecture
+- 🔨 Deciding on caching strategy (leaning toward SQLite)
+- 🔨 Planning genre structure (12 genres including Romantasy, Fantasy, BookTok, Action & Adventure)
+- 🔨 Will use DeepSeek API directly for generating recommendations
 
 ### Infrastructure Validation
 - 🔨 Need to test Prowlarr → qBittorrent → Audiobookshelf library path flow end-to-end
@@ -89,35 +72,36 @@ Add AI-curated book recommendations to Onyx homepage so family members can disco
 
 ### Primary Services
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    SALTBOX VPS (delboysden.uk)                      │
-│                                                                     │
-│  ┌──────────────┐         ┌──────────────┐                         │
-│  │ Audiobookshelf│◄────────┤    Onyx      │                         │
-│  │   (Library)  │         │  Frontend    │                         │
-│  │              │         │   (React)    │                         │
-│  └──────┬───────┘         └──────┬───────┘                         │
-│         │                        │                                  │
-│         │                        ▼                                  │
-│         │                 ┌──────────────┐                         │
-│         │                 │ Onyx Backend │                         │
-│         └─────────────────┤  (Node.js)   │                         │
-│                           └──────┬───────┘                         │
-│                                  │                                  │
-│            ┌───────────────┬─────┼─────┬───────────────┐          │
-│            ▼               ▼           ▼               ▼           │
-│     ┌──────────┐    ┌──────────┐ ┌──────────┐  ┌──────────┐      │
-│     │ AI Book  │    │ Discovery │ │ Metadata │  │  Cover   │      │
-│     │ Curator  │    │  Cache   │ │  Cache   │  │ Resolver │      │
-│     └────┬─────┘    └────┬─────┘ └────┬─────┘  └────┬─────┘      │
-│          │               │            │              │             │
-│          ▼               ▼            ▼              ▼             │
-│    ┌──────────┐    ┌──────────┐ ┌──────────┐  ┌──────────┐       │
-│    │ DeepSeek │    │  SQLite  │ │  Google  │  │ Hardcover│       │
-│    │   API    │    │   DB     │ │  Books   │  │   API    │       │
-│    └──────────┘    └──────────┘ └──────────┘  └──────────┘       │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                    SALTBOX VPS (delboysden.uk)              │
+│                                                               │
+│  ┌──────────────┐         ┌──────────────┐                  │
+│  │ Audiobookshelf│◄────────┤    Onyx      │                  │
+│  │   (Library)  │         │  Frontend    │                  │
+│  │              │         │  (Next.js)   │                  │
+│  └──────┬───────┘         └──────┬───────┘                  │
+│         │                        │                           │
+│         │                        ▼                           │
+│         │                 ┌──────────────┐                  │
+│         │                 │ Onyx Backend │                  │
+│         └─────────────────┤   (FastAPI)  │                  │
+│                           └──────┬───────┘                  │
+│                                  │                           │
+│                    ┌─────────────┼─────────────┐            │
+│                    ▼             ▼             ▼            │
+│            ┌──────────┐  ┌──────────┐  ┌──────────┐        │
+│            │ Discord  │  │ Prowlarr │  │qBittorrent        │
+│            │   Bot    │  │          │  │          │        │
+│            └──────────┘  └──────────┘  └──────────┘        │
+│                                                               │
+└───────────────────────────────────────────────────────────┘
+                           │
+                           │ External APIs
+                           ▼
+                    ┌──────────────┐
+                    │  OpenRouter  │
+                    │  (AI Models) │
+                    └──────────────┘
 ```
 
 ### Technology Details
@@ -129,107 +113,10 @@ Add AI-curated book recommendations to Onyx homepage so family members can disco
 - Deployed via Docker
 
 **Backend:**
-- Node.js with Express
-- SQLite for caching (implemented)
-  - 24h TTL for recommendations
-  - 30m TTL for genre discovery
-- Multiple caching layers:
-  - Discovery Cache (genre-based recommendations)
-  - Metadata Cache (book details)
-  - Cover Resolution Cache
-
-**Data Flow Architecture:**
-```mermaid
-flowchart TD
-    subgraph Frontend
-        UI[User Interface]
-        GenreNav[Genre Navigation]
-    end
-
-    subgraph Backend
-        API[API Layer]
-        
-        subgraph CacheLayer[Caching Layer]
-            DC[Discovery Cache<br>24h TTL]
-            MC[Metadata Cache<br>30d TTL]
-            GC[Genre Cache<br>30m TTL]
-        end
-        
-        subgraph Services
-            ABC[AI Book Curator]
-            CR[Cover Resolver]
-            MA[Metadata Aggregator]
-        end
-    end
-
-    subgraph ExternalAPIs[External APIs]
-        DS[DeepSeek API]
-        GB[Google Books API]
-        HC[Hardcover API]
-        ABS[Audiobookshelf]
-    end
-
-    %% Frontend flows
-    UI --> API
-    GenreNav --> API
-    
-    %% API routing
-    API --> DC
-    API --> GC
-    
-    %% Cache misses
-    DC -- Cache Miss --> ABC
-    MC -- Cache Miss --> MA
-    GC -- Cache Miss --> ABC
-    
-    %% Service interactions
-    ABC --> DS
-    MA --> GB
-    MA --> HC
-    CR --> ABS
-    
-    %% Cache updates
-    ABC --> DC
-    MA --> MC
-    ABC --> GC
-
-    %% Error handling
-    DS -- Fallback --> GB
-    HC -- Fallback --> GB
-    GB -- Fallback --> ABS
-```
-
-**Cache Invalidation Strategy:**
-- Discovery Cache (24h TTL):
-  - Full invalidation at midnight
-  - Lazy loading per genre
-  - Forced refresh via admin endpoint
-
-- Genre Cache (30m TTL):
-  - Rolling expiration
-  - Keeps hot genres in memory
-  - Background refresh for popular genres
-
-- Metadata Cache (30d TTL):
-  - Per-book expiration
-  - LRU eviction policy
-  - Persistent storage in SQLite
-
-**Error Handling & Fallbacks:**
-1. DeepSeek API failure:
-   - Retry with exponential backoff
-   - Fall back to cached recommendations
-   - Use Google Books popular lists as last resort
-
-2. Metadata enrichment:
-   - Try Google Books first
-   - Fall back to Hardcover API
-   - Use Audiobookshelf data if both fail
-
-3. Cover resolution:
-   - Try publisher cover URL
-   - Fall back to Google Books
-   - Use placeholder if no cover found
+- FastAPI (Python 3.11+)
+- SQLite for caching (to be implemented)
+- Pydantic models for validation
+- Async/await patterns
 
 **Infrastructure:**
 - Saltbox VPS (Ubuntu 24.04)
@@ -239,11 +126,10 @@ flowchart TD
 
 **Integrations:**
 - Audiobookshelf API (authenticated)
-- DeepSeek API (direct access, primary AI provider)
-- Google Books API (metadata enrichment)
-- Hardcover API (additional book data)
-- Prowlarr API (content discovery)
-- qBittorrent API (download management)
+- OpenRouter API (multi-model access)
+- DeepSeek API (direct access with account credit)
+- Prowlarr API
+- qBittorrent API
 
 **Development Tools:**
 - Claude Code (with OpenRouter proxy + direct DeepSeek API)
@@ -335,39 +221,28 @@ flowchart TD
 
 ```
 onyx/
-├── client/               # Frontend application
-│   ├── src/
-│   │   ├── App.js       # Main application component
-│   │   └── components/
-│   │       ├── AdminDashboard.js
-│   │       ├── AdminPanel.js
-│   │       ├── BookDrawer.js
-│   │       ├── BookRow.js
-│   │       ├── FloatingAdminButton.js
-│   │       ├── HomePage.js
-│   │       └── UserSelector.js
+├── frontend/              # Next.js application
+│   ├── app/
+│   │   ├── page.tsx      # Homepage (recommendations go here)
+│   │   └── api/          # API routes
+│   └── components/
+│       └── RecommendationCard.tsx  # To be created
 │
-├── server/               # Backend application
-│   ├── index.js         # Main server entry
-│   ├── genre_discovery.js
-│   ├── metadata_aggregator.js
-│   ├── scanner.js
+├── backend/               # FastAPI application
+│   ├── main.py           # Main app entry
+│   ├── routes/
+│   │   └── recommendations.py  # NEW: AI recommendations endpoint
 │   ├── services/
-│   │   ├── aiBookCurator.js    # AI recommendations service
-│   │   ├── audiobookshelf.js   # ABS integration
-│   │   ├── bookMetadataCache.js # Book metadata caching
-│   │   ├── coverResolver.js    # Cover image handling
-│   │   ├── dataStore.js       # Data persistence
-│   │   ├── discoveryCache.js  # Discovery results caching
-│   │   ├── googleBooksApi.js  # Google Books integration
-│   │   ├── prowlarr.js       # Prowlarr integration
-│   │   └── qbittorrent.js    # qBittorrent integration
-│   └── utils/
-│       └── timeout.js        # Timeout handling
+│   │   ├── audiobookshelf.py   # ABS API client
+│   │   └── openrouter.py       # NEW: AI integration
+│   └── cache/
+│       └── sqlite_cache.py     # NEW: Caching layer
 │
-└── systemd/              # System service definitions
-    ├── onyx-cache-refresh.service
-    └── onyx-cache-refresh.timer
+├── discord_bot/           # Separate Discord bot service
+│   └── bot.py
+│
+└── .claude/
+    └── context.md        # Project context for Claude Code
 ```
 
 ---
@@ -446,32 +321,42 @@ onyx/
 
 ## 🎯 Implementation Plan (Next Steps)
 
-### Current Phase: Frontend Integration & Testing
-- [x] AI Recommendations Backend
-  - [x] Implemented DeepSeek API integration with retry logic
-  - [x] Added multi-source metadata enrichment (DeepSeek, Google Books, Hardcover)
-  - [x] Built caching system with 24h TTL
-  - [x] Added 11 genre categories with customized prompts
-  - [x] Implemented cover image resolution system
+### Phase 1: Basic Recommendation Endpoint (Week 1)
+- [ ] Create `/api/recommendations` FastAPI endpoint
+- [ ] Integrate Audiobookshelf API to fetch library
+- [ ] Send book list to DeepSeek API (direct, not via OpenRouter)
+- [ ] Return 5 recommendations as JSON
+- [ ] Test manually with curl
 
-- 🔨 Frontend Integration
-  - [ ] Test existing components with real recommendation data
-  - [ ] Add loading states and error handling
-  - [ ] Implement mobile-responsive design
-  - [ ] Add genre filtering/navigation
-  - [ ] WAF testing on mobile devices
+**Definition of Done:** Can curl endpoint and get 5 book titles back
 
-- 🔨 System Testing
-  - [ ] Load testing with full 200+ book library
-  - [ ] Cost monitoring over 24-hour cycles
-  - [ ] Cache hit rate analysis
-  - [ ] Mobile browser compatibility testing
-  - [ ] End-to-end flow validation
+### Phase 2: Frontend Integration (Week 1-2)
+- [ ] Create RecommendationCard component (mobile-responsive)
+- [ ] Fetch from backend on homepage load
+- [ ] Display with Audiobookshelf covers
+- [ ] Add loading states and error handling
+- [ ] Test on mobile browsers (primary use case)
+- [ ] WAF test with wife (on her phone)
 
-**Definition of Done:**
-- Frontend displays recommendations smoothly on all devices
-- Cache system maintains costs under $0.50/month target
-- WAF approval on mobile usability
+**Definition of Done:** Homepage shows recommendations on desktop AND mobile without breaking
+
+### Phase 3: Caching & Multi-Genre (Week 2-3)
+- [ ] Implement SQLite cache with 24h TTL
+- [ ] Add genre parameter support (12 genres)
+- [ ] Add randomization to prevent repetition
+- [ ] Update frontend for multiple genre sections
+- [ ] Cost monitoring
+
+**Definition of Done:** All genres work, cache prevents duplicate API calls, cost <$0.50/month
+
+### Phase 4: Production Polish (Week 3)
+- [ ] Add comprehensive error handling
+- [ ] Implement fallback behavior
+- [ ] Add logging and monitoring
+- [ ] Test with full library (200+ books)
+- [ ] Deploy and monitor for 3 days
+
+**Definition of Done:** Runs for 3 days without issues, family uses it successfully
 
 ---
 
@@ -485,7 +370,7 @@ onyx/
 **Documentation:**
 - Audiobookshelf API: https://api.audiobookshelf.org
 - OpenRouter Models: https://openrouter.ai/models
-- Express Docs: https://expressjs.com/
+- FastAPI Docs: https://fastapi.tiangolo.com
 - Next.js Docs: https://nextjs.org/docs
 
 ---
@@ -527,7 +412,7 @@ onyx/
 
 **Craig's knowledge level:**
 - ✅ Expert: Docker, systemd, Linux admin, networking, API integration
-- ✅ Strong: Node.js, Express, JavaScript, React basics
+- ✅ Strong: Python, FastAPI, JavaScript, React basics
 - 🟡 Developing: Next.js App Router, TypeScript, frontend state management
 - 🔴 Learning: AI integration patterns, prompt engineering, cost optimization
 

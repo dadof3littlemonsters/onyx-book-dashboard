@@ -18,10 +18,23 @@ services:
       - ABS_API_KEY=${ABS_API_KEY}
       - HARDCOVER_TOKEN=${HARDCOVER_TOKEN}
       - GOOGLE_BOOKS_API_KEY=${GOOGLE_BOOKS_API_KEY}
+      - GOOGLE_BOOKS_API_KEY_2=${GOOGLE_BOOKS_API_KEY_2}
+      - GOOGLE_BOOKS_API_KEY_3=${GOOGLE_BOOKS_API_KEY_3}
+      - GOOGLE_BOOKS_API_KEY_4=${GOOGLE_BOOKS_API_KEY_4}
+      - GOOGLE_BOOKS_API_KEY_5=${GOOGLE_BOOKS_API_KEY_5}
+      - AUDIOBOOKSHELF_URL=${AUDIOBOOKSHELF_URL}
+      - AUDIOBOOKSHELF_TOKEN=${AUDIOBOOKSHELF_TOKEN}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+      - ZLIBRARY_BOT_USERNAME=${ZLIBRARY_BOT_USERNAME}
     volumes:
       - ./data:/app/data
       - /mnt/local/Media/Audiobooks:/app/media/audiobooks:ro
       - /mnt/local/Media/Ebooks:/app/media/ebooks:ro
+      - /mnt/unionfs/downloads:/downloads
+      - /mnt/unionfs/Media/Audiobooks:/mnt/unionfs/Media/Audiobooks
+      - /mnt/unionfs/Media/Ebooks:/mnt/unionfs/Media/Ebooks
     networks:
       - saltbox
     labels:

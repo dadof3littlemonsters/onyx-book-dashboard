@@ -3,6 +3,7 @@ import { Search, User, LogOut, Menu, Settings } from 'lucide-react';
 import BookRow from './BookRow';
 import BookDrawer from './BookDrawer';
 import UserSelector from './UserSelector';
+import Header from './Header';
 import '../App.css';
 
 const HomePage = () => {
@@ -157,70 +158,34 @@ const HomePage = () => {
 
   const categories = [
     { name: 'Romantasy', key: 'romantasy' },
-    { name: 'Fantasy', key: 'fantasy' },
-    { name: 'Sci-Fi', key: 'scifi' },
-    { name: 'Cozy', key: 'cozy' },
+    { name: 'Fantasy & High Fantasy', key: 'fantasy' },
+    { name: 'BookTok Trending', key: 'booktok_trending' },
     { name: 'Popular Right Now', key: 'popular' },
-    { name: 'Hidden Gems', key: 'hidden_gems' }
+    { name: 'New This Month', key: 'new_releases' },
+    { name: 'Hidden Gems', key: 'hidden_gems' },
+    { name: 'Action & Adventure', key: 'action_adventure' },
+    { name: 'Science Fiction', key: 'scifi' },
+    { name: 'Dark Fantasy', key: 'dark_fantasy' },
+    { name: 'Enemies to Lovers', key: 'enemies_to_lovers' },
+    { name: 'Dragons & Magic', key: 'dragons' },
+    { name: 'Coming Soon: Personalized recommendations based on your requests', key: 'personalized' }
   ];
 
   return (
     <div className="app">
-      <header className="header">
-        <div className="header-content">
-          <h1 className="logo" onClick={handleLogoClick}>ONYX</h1>
-
-          <div className="search-container-centered">
-            <Search className="search-icon" size={20} />
-            <input
-              type="text"
-              placeholder="Search for books..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="search-input"
-            />
-          </div>
-
-          {selectedUser ? (
-            <div className="header-right">
-              <span className="username">{selectedUser.username}</span>
-              <div className="burger-menu-container">
-                <button onClick={handleBurgerMenuToggle} className="burger-menu-button">
-                  <Menu size={20} />
-                </button>
-                {isBurgerMenuOpen && (
-                  <>
-                    <div className="burger-menu-overlay" onClick={closeBurgerMenu}></div>
-                    <div className="burger-menu">
-                      <button onClick={handleChangeUser} className="burger-menu-item">
-                        <User size={18} />
-                        <span>Switch User</span>
-                      </button>
-                      <button onClick={handleLogout} className="burger-menu-item">
-                        <LogOut size={18} />
-                        <span>Logout</span>
-                      </button>
-                      {selectedUser.username.toLowerCase() === 'craig' && (
-                        <button onClick={handleAdminClick} className="burger-menu-item">
-                          <Settings size={18} />
-                          <span>Admin</span>
-                        </button>
-                      )}
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="header-right">
-              <button onClick={() => setIsUserSelectorOpen(true)} className="select-user-button">
-                <User size={18} />
-                <span>Who are you?</span>
-              </button>
-            </div>
-          )}
-        </div>
-      </header>
+      <Header
+        showSearch={true}
+        selectedUser={selectedUser}
+        onUserChange={() => setIsUserSelectorOpen(true)}
+        onAdminClick={selectedUser?.username.toLowerCase() === 'craig' ? handleAdminClick : null}
+        onLogout={handleLogout}
+        onLogoClick={handleLogoClick}
+        isBurgerMenuOpen={isBurgerMenuOpen}
+        onBurgerMenuToggle={handleBurgerMenuToggle}
+        closeBurgerMenu={closeBurgerMenu}
+        searchQuery={searchQuery}
+        onSearchChange={(e) => setSearchQuery(e.target.value)}
+      />
 
       <main className="main-content">
         {searchQuery.trim() && (
@@ -242,10 +207,16 @@ const HomePage = () => {
             {categories.map((category) => (
               <div key={category.key} className="category-section">
                 <h2 className="category-title">{category.name}</h2>
-                <BookRow
-                  category={category.key}
-                  onBookSelect={handleBookSelect}
-                />
+                {category.key === 'personalized' ? (
+                  <div className="personalized-placeholder">
+                    <p>Coming Soon: Personalized recommendations based on your requests</p>
+                  </div>
+                ) : (
+                  <BookRow
+                    category={category.key}
+                    onBookSelect={handleBookSelect}
+                  />
+                )}
               </div>
             ))}
           </div>

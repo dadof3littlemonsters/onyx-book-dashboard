@@ -1,15 +1,8 @@
-
-<!-- 
-This file was auto-generated on 2026-01-13 19:38 
-from your actual environment configuration.
-API keys are masked for security.
--->
-
 # Onyx Technical Reference
 
 **⚠️ WARNING: This file contains sensitive information. Do NOT commit to public repos.**
 
-Last Updated: 2026-01-13 19:38
+Last Updated: 2026-01-13
 
 ---
 
@@ -18,8 +11,8 @@ Last Updated: 2026-01-13 19:38
 ### Production Services
 ```
 Onyx Frontend:        https://onyx.delboysden.uk
-Audiobookshelf:       http://audiobookshelf:80
-Prowlarr:             http://prowlarr:9696
+Audiobookshelf:       https://audiobookshelf.delboysden.uk
+Prowlarr:             https://prowlarr.delboysden.uk
 qBittorrent:          https://qbittorrent.delboysden.uk
 Traefik Dashboard:    https://traefik.delboysden.uk
 ```
@@ -28,7 +21,7 @@ Traefik Dashboard:    https://traefik.delboysden.uk
 
 **Audiobookshelf API:**
 ```
-Base URL: http://audiobookshelf:80/api
+Base URL: https://audiobookshelf.delboysden.uk/api
 Documentation: https://api.audiobookshelf.org
 
 Key Endpoints:
@@ -51,7 +44,7 @@ Referenced in chat history but NOT currently implemented
 
 **Prowlarr API:**
 ```
-Base URL: http://prowlarr:9696/api/v1
+Base URL: https://prowlarr.delboysden.uk/api/v1
 API Key: [Stored in environment variable PROWLARR_API_KEY]
 
 Key Endpoints:
@@ -80,26 +73,26 @@ POST /api/v2/torrents/add     - Add torrent
 **Required Environment Variables:**
 ```bash
 # Audiobookshelf
-AUDIOBOOKSHELF_URL=http://audiobookshelf:80
-AUDIOBOOKSHELF_TOKEN=eyJh...pYXQ
+AUDIOBOOKSHELF_URL=https://audiobookshelf.delboysden.uk
+AUDIOBOOKSHELF_TOKEN=[Get from: Settings -> Users -> API Token]
 
 # DeepSeek (Direct API)
-DEEPSEEK_API_KEY=[REDACTED]
+DEEPSEEK_API_KEY=[Your DeepSeek API key]
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 
 # OpenRouter (Fallback)
-OPENROUTER_API_KEY=[REDACTED]
+OPENROUTER_API_KEY=[Your OpenRouter API key]
 OPENROUTER_APP_NAME=onyx
 OPENROUTER_SITE_URL=https://onyx.delboysden.uk
 
 # Prowlarr
-PROWLARR_URL=http://prowlarr:9696
-PROWLARR_API_KEY=dc77...bff9
+PROWLARR_URL=https://prowlarr.delboysden.uk
+PROWLARR_API_KEY=[Get from: Settings -> General -> Security -> API Key]
 
 # qBittorrent
 QBITTORRENT_URL=https://qbittorrent.delboysden.uk
-QBITTORRENT_USERNAME=[NOT SET]
-QBITTORRENT_PASSWORD=[REDACTED]
+QBITTORRENT_USERNAME=[Your qBittorrent username]
+QBITTORRENT_PASSWORD=[Your qBittorrent password]
 
 # Database
 DATABASE_PATH=/opt/onyx/data/onyx.db
@@ -165,12 +158,6 @@ CACHE_DB_PATH=/opt/onyx/data/cache.db
 ## 🐳 Docker Configuration
 
 ### Container Names (Saltbox Standard)
-
-### Running Onyx Containers
-```
-- onyx
-```
-
 ```
 onyx-frontend
 onyx-backend
@@ -250,7 +237,7 @@ EOF
 ### Check Audiobookshelf Library
 ```bash
 # List all books in library
-curl http://audiobookshelf:80/api/libraries/{LIBRARY_ID}/items \
+curl https://audiobookshelf.delboysden.uk/api/libraries/{LIBRARY_ID}/items \
   -H "Authorization: Bearer ${AUDIOBOOKSHELF_TOKEN}"
 ```
 
@@ -279,7 +266,7 @@ curl https://api.deepseek.com/v1/chat/completions \
 ### Audiobookshelf Connection Fails
 1. Check if ABS is running: `docker ps | grep audiobookshelf`
 2. Verify token hasn't expired (regenerate if needed)
-3. Test endpoint directly: `curl http://audiobookshelf:80/api/ping`
+3. Test endpoint directly: `curl https://audiobookshelf.delboysden.uk/api/ping`
 
 ### Files Not Landing in Correct Library Path
 1. Check qBittorrent download path: Settings → Downloads

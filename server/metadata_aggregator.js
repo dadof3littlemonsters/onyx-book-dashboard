@@ -1,51 +1,14 @@
 const fs = require('fs').promises;
 const path = require('path');
 
+const bookMetadataCache = require('./services/bookMetadataCache');
+
 class MetadataAggregator {
   constructor() {
-    this.cacheFile = path.join(__dirname, '../data/metadata_cache.json');
-    this.cache = new Map();
-    this.loadCache();
+    this.cacheBackend = bookMetadataCache;
   }
 
-  async loadCache() {
-    try {
-      const cacheData = await fs.readFile(this.cacheFile, 'utf8');
-      const parsedCache = JSON.parse(cacheData);
-      Object.entries(parsedCache).forEach(([key, value]) => {
-        this.cache.set(key, value);
-      });
-      console.log(`Loaded ${this.cache.size} cached metadata entries`);
-    } catch (error) {
-      console.log('No existing metadata cache found, starting fresh');
-      await this.ensureDataDirectory();
-    }
-  }
 
-  async saveCache() {
-    try {
-      await this.ensureDataDirectory();
-      const cacheObject = Object.fromEntries(this.cache);
-      await fs.writeFile(this.cacheFile, JSON.stringify(cacheObject, null, 2));
-    } catch (error) {
-      console.error('Error saving metadata cache:', error);
-    }
-  }
-
-  async ensureDataDirectory() {
-    const dataDir = path.join(__dirname, '../data');
-    try {
-      await fs.mkdir(dataDir, { recursive: true });
-    } catch (error) {
-      if (error.code !== 'EEXIST') {
-        console.error('Error creating data directory:', error);
-      }
-    }
-  }
-
-  generateCacheKey(title, author, type = 'book') {
-    return `${type}:${title.toLowerCase().trim()}:${author.toLowerCase().trim()}`;
-  }
 
   async fetchAudnexusMetadata(title, author) {
     try {
@@ -237,15 +200,15 @@ class MetadataAggregator {
   }
 
   async getMetadata(title, author, type = 'book', forceRefresh = false) {
-    const cacheKey = this.generateCacheKey(title, author, type);
-
-    if (!forceRefresh && this.cache.has(cacheKey)) {
-      const cached = this.cache.get(cacheKey);
-      console.log(`Using cached metadata for: ${title} by ${author}`);
-      return cached;
+    if (!forceRefresh) {
+      const cached = await this.cacheBackend.get(title, author, type);
+      if (cached) {
+        console.log(`[Aggregator] Using cached metadata for: ${title} by ${author}`);
+        return cached;
+      }
     }
 
-    console.log(`Fetching fresh metadata for: ${title} by ${author}`);
+    console.log(`[Aggregator] Fetching fresh metadata for: ${title} by ${author}`);
 
     let metadata = null;
 
@@ -254,9 +217,7 @@ class MetadataAggregator {
 
     // Cache the result (even if null to prevent repeated failed requests)
     if (metadata) {
-      metadata.cached_at = new Date().toISOString();
-      this.cache.set(cacheKey, metadata);
-      await this.saveCache();
+      await this.cacheBackend.set(title, author, metadata, type);
     }
 
     return metadata;
@@ -341,13 +302,10 @@ class MetadataAggregator {
   }
 
   async clearCache() {
-    this.cache.clear();
-    try {
-      await fs.unlink(this.cacheFile);
-      console.log('Metadata cache cleared');
-    } catch (error) {
-      console.log('Cache file not found or already cleared');
-    }
+    // Note: This clears the shared bookMetadataCache storage file.
+    // This is generally safe as it will be repopulated as needed.
+    await this.cacheBackend.clear();
+    console.log('[Aggregator] Cache cleared via shared backend');
   }
 }
 

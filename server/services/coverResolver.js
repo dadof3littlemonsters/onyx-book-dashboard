@@ -131,26 +131,13 @@ class CoverResolver {
 
   async tryGoogleBooks(isbn13) {
     try {
-      const apiKey = process.env.GOOGLE_BOOKS_API_KEY;
-      if (!apiKey) {
-        return null;
-      }
+      const googleBooksApi = require('./googleBooksApi');
 
-      const response = await axios({
-        url: `https://www.googleapis.com/books/v1/volumes`,
-        params: {
-          q: `isbn:${isbn13}`,
-          key: apiKey,
-          maxResults: 1
-        },
-        timeout: this.requestTimeout
-      });
+      // Use the queued API instead of direct axios call
+      const results = await googleBooksApi.searchBooks(`isbn:${isbn13}`, 1);
 
-      const item = response.data?.items?.[0];
-      if (item) {
-        const thumbnail = item.volumeInfo?.imageLinks?.thumbnail ||
-                         item.volumeInfo?.imageLinks?.smallThumbnail;
-
+      if (results && results.length > 0) {
+        const thumbnail = results[0].thumbnail;
         if (thumbnail) {
           return thumbnail.replace('http://', 'https://');
         }

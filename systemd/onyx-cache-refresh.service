@@ -1,0 +1,23 @@
+[Unit]
+Description=Onyx AI Book Curation Cache Refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=seed
+Group=seed
+WorkingDirectory=/opt/onyx
+EnvironmentFile=/opt/onyx/.env
+ExecStart=/opt/onyx/refresh-cache.sh
+StandardOutput=journal
+StandardError=journal
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/log/onyx-cache-refresh.log
+
+[Install]
+WantedBy=multi-user.target

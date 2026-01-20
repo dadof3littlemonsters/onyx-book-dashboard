@@ -6,27 +6,48 @@ class ProwlarrService {
     this.apiKey = (process.env.PROWLARR_API_KEY || '').trim() || null;
   }
 
-  async search(query, categories = [8000, 3030]) {
+  async search(query, categories = []) {
     if (!this.apiKey) {
       throw new Error('PROWLARR_API_KEY is not configured');
     }
     try {
-      const categoryParam = categories.join(',');
+      // Prowlarr requires repeated category parameters or array format, not comma-separated string
+      // Axios default serialization (categories[]) works fine for Prowlarr
 
       const response = await axios.get(
         `${this.baseURL}/api/v1/search`,
         {
           params: {
             query: query,
-            categories: categoryParam,
+            ...(categories.length > 0 && { categories: categories }),
             type: 'search'
           },
           headers: {
             'X-Api-Key': this.apiKey
           },
-          timeout: 30000
+          timeout: 60000, // Increased from 30s to 60s for slow indexers
+          paramsSerializer: params => {
+            const searchParams = new URLSearchParams();
+            Object.keys(params).forEach(key => {
+              const value = params[key];
+              if (Array.isArray(value)) {
+                value.forEach(v => searchParams.append(key, v));
+              } else {
+                searchParams.append(key, value);
+              }
+            });
+            const queryString = searchParams.toString();
+            console.log('[Prowlarr] Query string:', queryString);
+            return queryString;
+          }
         }
       );
+
+      console.log('[Prowlarr] Response status:', response.status);
+      console.log('[Prowlarr] Response data length:', response.data?.length || 0);
+      if (response.data?.length > 0) {
+        console.log('[Prowlarr] First result:', JSON.stringify(response.data[0], null, 2));
+      }
 
       if (response.data && Array.isArray(response.data)) {
         return response.data.map(result => ({
