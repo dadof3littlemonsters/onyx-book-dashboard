@@ -11,28 +11,38 @@ if (!DEEPSEEK_API_KEY) {
   // Don't exit, just log - service may be used without DeepSeek if fallback needed
 }
 
+// Common rules appended to all prompts
+const PROMPT_RULES = `
+IMPORTANT RULES:
+- ONLY English language books (no translations, no foreign language editions)
+- NO box sets, collection sets, or multi-book bundles (e.g. "3-Book Collection", "Complete Series Box Set")
+- NO special editions, deluxe editions, or limited editions
+- NO book summaries, study guides, or "Conversations on..." titles
+- Each entry must be a SINGLE, individual book
+Return ONLY valid JSON: [{"title":"...","author":"..."}]`;
+
 const GENRE_PROMPTS = {
-  romantasy: "List 50 most popular romantasy books (2015-2025): include mega-hits like ACOTAR, Fourth Wing, Crescent City, plus newer releases. Mix of series starters and standalones. Must have 4.0+ average rating and 50,000+ ratings on Goodreads. Return ONLY valid JSON: [{\"title\":\"...\",\"author\":\"...\"}]",
+  romantasy: `List 50 most popular romantasy books (2015-2025): include mega-hits like ACOTAR, Fourth Wing, Crescent City, plus newer releases. Mix of series starters and standalones. Must have 4.0+ average rating and 50,000+ ratings on Goodreads.${PROMPT_RULES}`,
 
-  fantasy: "List 50 epic/high fantasy books: mix of modern classics (Sanderson, Tolkien, Le Guin, Rothfuss) and acclaimed recent releases (2010-2025). Include series starters. 4.2+ stars. Return ONLY valid JSON: [{\"title\":\"...\",\"author\":\"...\"}]",
+  fantasy: `List 50 epic/high fantasy books: mix of modern classics (Sanderson, Tolkien, Le Guin, Rothfuss) and acclaimed recent releases (2010-2025). Include series starters. 4.2+ stars.${PROMPT_RULES}`,
 
-  booktok_trending: "List 50 books currently viral on BookTok and Bookstagram (2024-2026). Include trending romantasy, thrillers, dark romance, and emotional reads with massive social media buzz. Books people can't stop talking about RIGHT NOW. 4.0+ stars. Return ONLY valid JSON: [{\"title\":\"...\",\"author\":\"...\"}]",
+  booktok_trending: `List 50 books currently viral on BookTok and Bookstagram (2024-2026). Include trending romantasy, thrillers, dark romance, and emotional reads with massive social media buzz. Books people can't stop talking about RIGHT NOW. 4.0+ stars.${PROMPT_RULES}`,
 
-  popular: "List 50 bestselling fiction books from 2024-2025 across all genres. Books currently trending with high sales/buzz. 4.0+ stars, diverse genres (not all fantasy). Return ONLY valid JSON: [{\"title\":\"...\",\"author\":\"...\"}]",
+  popular: `List 50 bestselling fiction books from 2024-2025 across all genres. Books currently trending with high sales/buzz. 4.0+ stars, diverse genres (not all fantasy).${PROMPT_RULES}`,
 
-  new_releases: "List 50 highly anticipated fiction releases from the last 6 months (focus on fantasy, sci-fi, romance, mystery). Include books with buzz even if ratings are still building. 3.8+ stars minimum. Return ONLY valid JSON: [{\"title\":\"...\",\"author\":\"...\"}]",
+  new_releases: `List 50 highly anticipated fiction releases from the last 6 months (focus on fantasy, sci-fi, romance, mystery). Include books with buzz even if ratings are still building. 3.8+ stars minimum.${PROMPT_RULES}`,
 
-  hidden_gems: "List 50 underrated fiction gems (2018-2025): 4.3+ stars, 5,000-50,000 ratings (not mega-famous but quality). Mix of fantasy, sci-fi, mystery. Traditional publishers preferred. Return ONLY valid JSON: [{\"title\":\"...\",\"author\":\"...\"}]",
+  hidden_gems: `List 50 underrated fiction gems (2018-2025): 4.3+ stars, 5,000-50,000 ratings (not mega-famous but quality). Mix of fantasy, sci-fi, mystery. Traditional publishers preferred.${PROMPT_RULES}`,
 
-  action_adventure: "List 50 fast-paced action and adventure books (2015-2025): urban fantasy (Dresden Files, Rivers of London style), time-travel action (Extracted series), zombie/apocalyptic survival with humor (Undead series, Zombie Fallout), military sci-fi, conspiracy thrillers. Contemporary settings, witty protagonists, plot-driven fun. Perfect palate cleansers after heavy epic fantasy. Authors like RR Haywood, Mark Tufo, Jim Butcher, Ben Aaronovitch, Blake Crouch, Andy Weir, Peter Clines. 4.0+ stars. Return ONLY valid JSON: [{\"title\":\"...\",\"author\":\"...\"}]",
+  action_adventure: `List 50 fast-paced action and adventure books (2015-2025): urban fantasy (Dresden Files, Rivers of London style), time-travel action (Extracted series), zombie/apocalyptic survival with humor (Undead series, Zombie Fallout), military sci-fi, conspiracy thrillers. Contemporary settings, witty protagonists, plot-driven fun. Perfect palate cleansers after heavy epic fantasy. Authors like RR Haywood, Mark Tufo, Jim Butcher, Ben Aaronovitch, Blake Crouch, Andy Weir, Peter Clines. 4.0+ stars.${PROMPT_RULES}`,
 
-  scifi: "List 50 popular sci-fi books (2015-2025): mix of space opera, cyberpunk, first contact, time travel. Include Becky Chambers, Andy Weir style accessible sci-fi. 4.0+ stars. Return ONLY valid JSON: [{\"title\":\"...\",\"author\":\"...\"}]",
+  scifi: `List 50 popular sci-fi books (2015-2025): mix of space opera, cyberpunk, first contact, time travel. Include Becky Chambers, Andy Weir style accessible sci-fi. 4.0+ stars.${PROMPT_RULES}`,
 
-  dark_fantasy: "List 50 dark fantasy books (2015-2025): gothic atmosphere, morally grey characters, grimdark elements. Think Joe Abercrombie, Mark Lawrence vibes. 4.0+ stars. Return ONLY valid JSON: [{\"title\":\"...\",\"author\":\"...\"}]",
+  dark_fantasy: `List 50 dark fantasy books (2015-2025): gothic atmosphere, morally grey characters, grimdark elements. Think Joe Abercrombie, Mark Lawrence vibes. 4.0+ stars.${PROMPT_RULES}`,
 
-  enemies_to_lovers: "List 50 fantasy/romantasy books (2018-2025) with strong enemies-to-lovers romance. Tension-filled, slow burn preferred. 4.0+ stars. Return ONLY valid JSON: [{\"title\":\"...\",\"author\":\"...\"}]",
+  enemies_to_lovers: `List 50 fantasy/romantasy books (2018-2025) with strong enemies-to-lovers romance. Tension-filled, slow burn preferred. 4.0+ stars.${PROMPT_RULES}`,
 
-  dragons: "List 50 fantasy books (2015-2025) prominently featuring dragons: dragon riders, dragon bonds, dragon wars. Mix of YA and adult. 4.0+ stars. Return ONLY valid JSON: [{\"title\":\"...\",\"author\":\"...\"}]"
+  dragons: `List 50 fantasy books (2015-2025) prominently featuring dragons: dragon riders, dragon bonds, dragon wars. Mix of YA and adult. 4.0+ stars.${PROMPT_RULES}`
 };
 
 class AIBookCurator {

@@ -14,8 +14,8 @@ const EBOOK_EXTENSIONS = ['.epub', '.mobi', '.azw3', '.pdf', '.cbz', '.cbr'];
 const SKIP_EXTENSIONS = ['.nfo', '.txt', '.torrent', '.url', '.sfv', '.md5', '.xml'];
 const KEEP_IMAGES = ['cover.jpg', 'cover.png', 'folder.jpg', 'folder.png'];
 
-const AUDIOBOOK_DEST = '/mnt/unionfs/Media/Audiobooks';
-const EBOOK_DEST = '/mnt/unionfs/Media/Ebooks';
+const AUDIOBOOK_DEST = '/mnt/books/audiobooks';
+const EBOOK_DEST = '/mnt/books/ebooks';
 const LOG_FILE = '/app/data/import_log.json';
 
 // Detect if this is a MyAnonymouse torrent
@@ -23,22 +23,61 @@ function isMAM(trackerUrl) {
     return trackerUrl && trackerUrl.includes('myanonamouse.net');
 }
 
-// Parse torrent name to extract author
+// Parse torrent name to extract author and title
 function parseTorrentName(name) {
-    // Common patterns: "Title - Author.ext" or "Author - Title.ext"
-    const match = name.match(/^(.+?)\s*-\s*(.+?)(\.[^.]+)?$/);
+    // Remove file extension if present
+    let cleanName = name.replace(/\.[^.]+$/, '');
 
-    if (match) {
-        const [, part1, part2] = match;
-        // Heuristic: if part2 looks like an author name (2-3 words), use it as author
-        const words = part2.trim().split(/\s+/);
-        if (words.length >= 2 && words.length <= 3) {
+    // Remove common suffixes like (Unabridged), [MP3], {2020}, etc.
+    cleanName = cleanName.replace(/\s*[\[\({\<][^\]\)}\>]*[\]\)}\>]\s*/g, ' ').trim();
+
+    // Pattern 1: "Author - Title" (most common for books)
+    // Pattern 2: "Author - Series ## - Title"
+    // Pattern 3: "Title - Author"
+
+    const dashMatch = cleanName.match(/^(.+?)\s*-\s*(.+)$/);
+
+    if (dashMatch) {
+        const [, part1, part2] = dashMatch;
+
+        // Check if part2 has another dash (series pattern: "Author - Series 01 - Title")
+        const part2Dash = part2.match(/^(.+?)\s*-\s*(.+)$/);
+        if (part2Dash) {
+            // Assume: Author - Series - Title
+            return {
+                author: part1.trim(),
+                title: part2Dash[2].trim(),
+                series: part2Dash[1].trim()
+            };
+        }
+
+        // Heuristic: If part1 looks like author name (2-4 words, capitalized)
+        const part1Words = part1.trim().split(/\s+/);
+        const part2Words = part2.trim().split(/\s+/);
+
+        // Check if part1 looks like an author (short, capitalized words)
+        const looksLikeAuthor = (words) => {
+            if (words.length < 2 || words.length > 4) return false;
+            // Authors typically have capitalized names
+            return words.every(w => /^[A-Z]/.test(w));
+        };
+
+        if (looksLikeAuthor(part1Words) && part2Words.length > 2) {
+            // Part1 is author, part2 is title
+            return { title: part2.trim(), author: part1.trim() };
+        } else if (looksLikeAuthor(part2Words) && part1Words.length > 2) {
+            // Part2 is author, part1 is title
             return { title: part1.trim(), author: part2.trim() };
+        } else {
+            // Default: assume "Author - Title" format (more common for torrent uploads)
+            return { title: part2.trim(), author: part1.trim() };
         }
     }
 
-    return { title: name, author: null };
+    // No dash found - use as title only
+    return { title: cleanName, author: null };
 }
+
 
 // Check if file should be processed
 function shouldProcessFile(filename) {
@@ -266,21 +305,38 @@ async function main() {
     const parsed = parseTorrentName(torrentName);
     console.log(`[INFO] Parsed - Title: ${parsed.title}, Author: ${parsed.author || 'Unknown'}`);
 
-    // Build destination path
+    // Build destination path using Audiobookshelf convention: Author/[Series/]Title/files
     let destPath;
-    if (isDirectory) {
-        // For directories, preserve structure
-        destPath = path.join(destBase, torrentName);
+    const author = parsed.author || 'Unknown Author';
+    const title = parsed.title || torrentName;
+    const series = parsed.series || null;
+
+    // Sanitize folder names (remove invalid characters)
+    const sanitize = (str) => str.replace(/[<>:"/\\|?*]/g, '_').trim();
+    const authorDir = sanitize(author);
+    const titleDir = sanitize(title);
+    const seriesDir = series ? sanitize(series) : null;
+
+    // Build path: Author/Series/Title/ or Author/Title/
+    let basePath;
+    if (seriesDir) {
+        basePath = path.join(destBase, authorDir, seriesDir, titleDir);
+        console.log(`[INFO] Series detected: ${series}`);
     } else {
-        // For single files, organize by author if available
-        if (parsed.author && mediaType === 'audiobook') {
-            destPath = path.join(destBase, parsed.author, path.basename(contentPath));
-        } else {
-            destPath = path.join(destBase, path.basename(contentPath));
-        }
+        basePath = path.join(destBase, authorDir, titleDir);
+    }
+
+    if (isDirectory) {
+        // For directories: just use the base path
+        destPath = basePath;
+    } else {
+        // For single files: basePath/filename
+        destPath = path.join(basePath, path.basename(contentPath));
     }
 
     console.log(`[INFO] Destination: ${destPath}`);
+    console.log(`[INFO] Structure: Author="${author}" | Series="${series || 'none'}" | Title="${title}"`);
+
 
     // Process files
     let results;

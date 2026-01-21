@@ -280,6 +280,7 @@ class TelegramService {
                     size: 'Unknown',
                     format: 'epub',
                     author: null,
+                    language: 'unknown',
                     messageId: message.id,
                 };
 
@@ -314,6 +315,12 @@ class TelegramService {
                         }
                     }
 
+                    // Check for language
+                    const langMatch = line.match(/\b(english|italian|spanish|french|german|portuguese|russian|chinese|japanese|korean|arabic|dutch|polish|turkish|czech|romanian|hungarian|swedish|norwegian|danish|finnish|greek)\b/i);
+                    if (langMatch) {
+                        book.language = langMatch[1].toLowerCase();
+                    }
+
                     // Look for author (usually line 2, check if it looks like a name)
                     if (i === 1 && !sizeMatch && !formatMatch && !bookCmdMatch) {
                         const potentialAuthor = line.replace(/^by\s+/i, '').trim();
@@ -324,9 +331,13 @@ class TelegramService {
                     }
                 }
 
-                // Only add book if we have a download command
+                // Only add book if we have a download command AND it's English (or unknown)
                 if (book.downloadCommand) {
-                    results.push(book);
+                    if (book.language === 'english' || book.language === 'unknown') {
+                        results.push(book);
+                    } else {
+                        console.log(`[Telegram] Filtered non-English book: "${book.title}" (${book.language})`);
+                    }
                 }
             }
         }

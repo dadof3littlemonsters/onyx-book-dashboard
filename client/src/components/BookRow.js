@@ -1,7 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import './BookRow.css';
 
 const BookRow = ({ category, books, onBookSelect }) => {
+  const scrollRef = useRef(null);
+  const [showLeftArrow, setShowLeftArrow] = useState(false);
+  const [showRightArrow, setShowRightArrow] = useState(true);
+
   const getCoverSrc = (cover) => {
     if (!cover) return null;
     // If server already returns a proxied path, keep it
@@ -26,6 +31,7 @@ const BookRow = ({ category, books, onBookSelect }) => {
 
   const [rowBooks, setRowBooks] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [imgErrors, setImgErrors] = useState({});
 
   useEffect(() => {
     if (books) {
@@ -45,6 +51,37 @@ const BookRow = ({ category, books, onBookSelect }) => {
     }
   }, [category, books]);
 
+  // Update arrow visibility based on scroll position
+  const updateArrows = () => {
+    if (!scrollRef.current) return;
+    const { scrollLeft, scrollWidth, clientWidth } = scrollRef.current;
+    setShowLeftArrow(scrollLeft > 10);
+    setShowRightArrow(scrollLeft < scrollWidth - clientWidth - 10);
+  };
+
+  useEffect(() => {
+    const scrollContainer = scrollRef.current;
+    if (scrollContainer) {
+      scrollContainer.addEventListener('scroll', updateArrows);
+      // Initial check
+      setTimeout(updateArrows, 100);
+      return () => scrollContainer.removeEventListener('scroll', updateArrows);
+    }
+  }, [rowBooks]);
+
+  const scroll = (direction) => {
+    if (!scrollRef.current) return;
+    const scrollAmount = scrollRef.current.clientWidth * 0.8;
+    scrollRef.current.scrollBy({
+      left: direction === 'left' ? -scrollAmount : scrollAmount,
+      behavior: 'smooth'
+    });
+  };
+
+  const handleImgError = (bookId) => {
+    setImgErrors(prev => ({ ...prev, [bookId]: true }));
+  };
+
   if (loading) {
     return (
       <div className="book-row">
@@ -55,37 +92,57 @@ const BookRow = ({ category, books, onBookSelect }) => {
 
   return (
     <div className="book-row">
-      <div className="book-scroll-container">
-        {rowBooks.map((book) => (
-          <div
-            key={book.id}
-            className="book-card"
-            onClick={() => onBookSelect(book)}
-          >
-            <div className="book-cover">
-              {getCoverSrc(book.coverUrl || book.thumbnail) ? (
-                <img src={getCoverSrc(book.coverUrl || book.thumbnail)} alt={book.title} loading="lazy" />
-              ) : (
-                <div className="book-cover-placeholder" aria-label={book.title}>
-                  {getInitials(book.title)}
+      {showLeftArrow && (
+        <button className="scroll-arrow scroll-arrow-left" onClick={() => scroll('left')} aria-label="Scroll left">
+          <ChevronLeft size={28} />
+        </button>
+      )}
+      <div className="book-scroll-container" ref={scrollRef}>
+        {rowBooks.map((book) => {
+          const coverSrc = getCoverSrc(book.coverUrl || book.thumbnail);
+          const hasError = imgErrors[book.id];
+
+          return (
+            <div
+              key={book.id}
+              className="book-card"
+              onClick={() => onBookSelect(book)}
+            >
+              <div className="book-cover">
+                {coverSrc && !hasError ? (
+                  <img
+                    src={coverSrc}
+                    alt={book.title}
+                    loading="lazy"
+                    onError={() => handleImgError(book.id)}
+                  />
+                ) : (
+                  <div className="book-cover-placeholder" aria-label={book.title}>
+                    {getInitials(book.title)}
+                  </div>
+                )}
+                {book.libraryStatus && (
+                  <div className="library-badge" data-status={book.libraryStatus}>
+                    {book.libraryStatus === 'owned' ? '✓' : ''}
+                  </div>
+                )}
+                <div className="book-overlay">
+                  {book.rating ? <div className="book-rating">★ {book.rating}</div> : null}
                 </div>
-              )}
-              {book.libraryStatus && (
-                <div className="library-badge" data-status={book.libraryStatus}>
-                  {book.libraryStatus === 'owned' ? '✓' : ''}
-                </div>
-              )}
-              <div className="book-overlay">
-                {book.rating ? <div className="book-rating">★ {book.rating}</div> : null}
+              </div>
+              <div className="book-info">
+                <h3 className="book-title">{book.title}</h3>
+                <p className="book-author">{book.author}</p>
               </div>
             </div>
-            <div className="book-info">
-              <h3 className="book-title">{book.title}</h3>
-              <p className="book-author">{book.author}</p>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
+      {showRightArrow && (
+        <button className="scroll-arrow scroll-arrow-right" onClick={() => scroll('right')} aria-label="Scroll right">
+          <ChevronRight size={28} />
+        </button>
+      )}
     </div>
   );
 };

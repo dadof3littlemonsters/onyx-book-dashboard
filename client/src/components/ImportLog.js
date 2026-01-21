@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { FileCheck, AlertCircle, HardDrive, Trash2 } from 'lucide-react';
+import { FileCheck, AlertCircle, HardDrive, Trash2, Home } from 'lucide-react';
+import Header from './Header';
 import './AdminPanel.css';
 
 const ImportLog = () => {
@@ -96,120 +97,130 @@ const ImportLog = () => {
     };
 
     return (
-        <div className="import-log-container">
-            <div className="import-log-header">
-                <h2>Import Log</h2>
-                <button onClick={handleCleanup} className="cleanup-button">
-                    <Trash2 size={16} />
-                    Cleanup Old
-                </button>
-            </div>
+        <div className="app">
+            <Header
+                showSearch={false}
+                onLogoClick={() => window.location.href = '/'}
+            />
 
-            {stats && (
-                <div className="import-stats">
-                    <div className="stat-card">
-                        <FileCheck size={24} />
-                        <div>
-                            <div className="stat-value">{stats.total}</div>
-                            <div className="stat-label">Total Imports</div>
-                        </div>
+            <main className="admin-main">
+                <div className="import-log-container">
+                    <div className="import-log-header">
+                        <h2>Import Log</h2>
+                        <button onClick={handleCleanup} className="cleanup-button">
+                            <Trash2 size={16} />
+                            Cleanup Old
+                        </button>
                     </div>
-                    <div className="stat-card">
-                        <div style={{ color: '#10b981' }}>✓</div>
-                        <div>
-                            <div className="stat-value">{stats.successful}</div>
-                            <div className="stat-label">Successful</div>
-                        </div>
-                    </div>
-                    <div className="stat-card">
-                        <AlertCircle size={24} color="#ef4444" />
-                        <div>
-                            <div className="stat-value">{stats.failed}</div>
-                            <div className="stat-label">Failed</div>
-                        </div>
-                    </div>
-                    <div className="stat-card">
-                        <HardDrive size={24} color="#3b82f6" />
-                        <div>
-                            <div className="stat-value">{stats.mamImports}</div>
-                            <div className="stat-label">MAM Hardlinks</div>
-                        </div>
-                    </div>
-                </div>
-            )}
 
-            <div className="import-filters">
-                <button
-                    className={filter === 'all' ? 'filter-active' : ''}
-                    onClick={() => setFilter('all')}
-                >
-                    All
-                </button>
-                <button
-                    className={filter === 'success' ? 'filter-active' : ''}
-                    onClick={() => setFilter('success')}
-                >
-                    Success
-                </button>
-                <button
-                    className={filter === 'failed' ? 'filter-active' : ''}
-                    onClick={() => setFilter('failed')}
-                >
-                    Failed
-                </button>
-            </div>
-
-            {loading ? (
-                <div className="loading-spinner"></div>
-            ) : (
-                <div className="import-list">
-                    {filteredImports.length === 0 ? (
-                        <p className="no-imports">No imports found</p>
-                    ) : (
-                        filteredImports.map((imp) => (
-                            <div key={imp.id} className="import-card">
-                                <div className="import-header">
-                                    <h4>{imp.torrentName}</h4>
-                                    <div className="import-badges">
-                                        {getOperationBadge(imp.operation)}
-                                        {getStatusBadge(imp.status)}
-                                    </div>
+                    {stats && (
+                        <div className="import-stats">
+                            <div className="stat-card">
+                                <FileCheck size={24} />
+                                <div>
+                                    <div className="stat-value">{stats.total}</div>
+                                    <div className="stat-label">Total Imports</div>
                                 </div>
-                                <div className="import-details">
-                                    <div className="import-info">
-                                        <span className="import-label">Media:</span>
-                                        <span>{imp.mediaType}</span>
-                                    </div>
-                                    <div className="import-info">
-                                        <span className="import-label">Processed:</span>
-                                        <span>{imp.filesProcessed} files</span>
-                                    </div>
-                                    <div className="import-info">
-                                        <span className="import-label">Skipped:</span>
-                                        <span>{imp.filesSkipped} files</span>
-                                    </div>
-                                    <div className="import-info">
-                                        <span className="import-label">Time:</span>
-                                        <span>{new Date(imp.timestamp).toLocaleString()}</span>
-                                    </div>
-                                </div>
-                                {imp.errors && imp.errors.length > 0 && (
-                                    <div className="import-errors">
-                                        <strong>Errors:</strong>
-                                        {imp.errors.map((err, idx) => (
-                                            <div key={idx} className="error-item">
-                                                {err.file}: {err.error}
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
                             </div>
-                        ))
+                            <div className="stat-card">
+                                <div style={{ color: '#10b981' }}>✓</div>
+                                <div>
+                                    <div className="stat-value">{stats.successful}</div>
+                                    <div className="stat-label">Successful</div>
+                                </div>
+                            </div>
+                            <div className="stat-card">
+                                <AlertCircle size={24} color="#ef4444" />
+                                <div>
+                                    <div className="stat-value">{stats.failed}</div>
+                                    <div className="stat-label">Failed</div>
+                                </div>
+                            </div>
+                            <div className="stat-card">
+                                <HardDrive size={24} color="#3b82f6" />
+                                <div>
+                                    <div className="stat-value">{stats.mamImports}</div>
+                                    <div className="stat-label">MAM Hardlinks</div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="import-filters">
+                        <button
+                            className={filter === 'all' ? 'filter-active' : ''}
+                            onClick={() => setFilter('all')}
+                        >
+                            All
+                        </button>
+                        <button
+                            className={filter === 'success' ? 'filter-active' : ''}
+                            onClick={() => setFilter('success')}
+                        >
+                            Success
+                        </button>
+                        <button
+                            className={filter === 'failed' ? 'filter-active' : ''}
+                            onClick={() => setFilter('failed')}
+                        >
+                            Failed
+                        </button>
+                    </div>
+
+                    {loading ? (
+                        <div className="loading-spinner"></div>
+                    ) : (
+                        <div className="import-list">
+                            {filteredImports.length === 0 ? (
+                                <p className="no-imports">No imports found</p>
+                            ) : (
+                                filteredImports.map((imp) => (
+                                    <div key={imp.id} className="import-card">
+                                        <div className="import-header">
+                                            <h4>{imp.torrentName}</h4>
+                                            <div className="import-badges">
+                                                {getOperationBadge(imp.operation)}
+                                                {getStatusBadge(imp.status)}
+                                            </div>
+                                        </div>
+                                        <div className="import-details">
+                                            <div className="import-info">
+                                                <span className="import-label">Media:</span>
+                                                <span>{imp.mediaType}</span>
+                                            </div>
+                                            <div className="import-info">
+                                                <span className="import-label">Processed:</span>
+                                                <span>{imp.filesProcessed} files</span>
+                                            </div>
+                                            <div className="import-info">
+                                                <span className="import-label">Skipped:</span>
+                                                <span>{imp.filesSkipped} files</span>
+                                            </div>
+                                            <div className="import-info">
+                                                <span className="import-label">Time:</span>
+                                                <span>{new Date(imp.timestamp).toLocaleString()}</span>
+                                            </div>
+                                        </div>
+                                        {imp.errors && imp.errors.length > 0 && (
+                                            <div className="import-errors">
+                                                <strong>Errors:</strong>
+                                                {imp.errors.map((err, idx) => (
+                                                    <div key={idx} className="error-item">
+                                                        {err.file}: {err.error}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                ))
+                            )}
+                        </div>
                     )}
                 </div>
-            )}
+            </main>
         </div>
     );
 };
 
 export default ImportLog;
+

@@ -30,11 +30,11 @@ services:
       - ZLIBRARY_BOT_USERNAME=${ZLIBRARY_BOT_USERNAME}
     volumes:
       - ./data:/app/data
-      - /mnt/local/Media/Audiobooks:/app/media/audiobooks:ro
-      - /mnt/local/Media/Ebooks:/app/media/ebooks:ro
+      - /mnt/books/audiobooks:/app/media/audiobooks:ro
+      - /mnt/books/ebooks:/app/media/ebooks:ro
       - /mnt/unionfs/downloads:/downloads
-      - /mnt/unionfs/Media/Audiobooks:/mnt/unionfs/Media/Audiobooks
-      - /mnt/unionfs/Media/Ebooks:/mnt/unionfs/Media/Ebooks
+      - /mnt/books/audiobooks:/mnt/books/audiobooks
+      - /mnt/books/ebooks:/mnt/books/ebooks
     networks:
       - saltbox
     labels:

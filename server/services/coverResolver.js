@@ -117,13 +117,22 @@ class CoverResolver {
     try {
       const url = `https://covers.openlibrary.org/b/isbn/${isbn13}-L.jpg?default=false`;
 
-      const response = await axios.head(url, { timeout: this.requestTimeout });
+      // Use GET with responseType to actually validate the image exists
+      const response = await axios.get(url, {
+        timeout: this.requestTimeout,
+        responseType: 'arraybuffer',
+        validateStatus: (status) => status === 200 // Only accept 200
+      });
 
-      if (response.status === 200) {
+      // Check if we got actual image data (not an error page)
+      const contentType = response.headers['content-type'];
+      if (contentType && contentType.includes('image') && response.data.length > 1000) {
+        // Valid image found
         return url;
       }
     } catch (error) {
-      // Open Library may not have the cover
+      // Open Library may not have the cover or returned an error
+      // This is expected - silently continue to next source
     }
 
     return null;
@@ -171,9 +180,52 @@ class CoverResolver {
   }
 
   getPlaceholderUrl() {
-    const colors = ['1a1a1a', '2d3748', '4a5568', '718096'];
-    const color = colors[Math.floor(Math.random() * colors.length)];
-    return `https://via.placeholder.com/200x300/${color}/ffffff?text=No+Cover`;
+    // Return a data URL that signals to frontend to use initials placeholder
+    // This avoids relying on external placeholder services
+    return null;
+  }
+
+  // Search by title/author when ISBN lookup fails
+  async tryTitleSearch(title, author) {
+    if (!title) return null;
+
+    try {
+      const googleBooksApi = require('./googleBooksApi');
+      const query = author ? `intitle:"${title}"+inauthor:"${author}"` : `intitle:"${title}"`;
+
+      const results = await googleBooksApi.searchBooks(query, 3);
+
+      if (results && results.length > 0) {
+        // Find the best match
+        for (const result of results) {
+          if (result.thumbnail) {
+            return result.thumbnail.replace('http://', 'https://');
+          }
+        }
+      }
+    } catch (error) {
+      // Title search may fail
+    }
+
+    return null;
+  }
+
+  // Get cover with optional title fallback
+  async getCoverWithTitleFallback(isbn13, title, author, fallbackUrl = null) {
+    // First try ISBN-based lookup
+    const isbnCover = await this.getCoverUrl(isbn13, null);
+    if (isbnCover) {
+      return isbnCover;
+    }
+
+    // ISBN failed, try title search
+    const titleCover = await this.tryTitleSearch(title, author);
+    if (titleCover) {
+      return titleCover;
+    }
+
+    // All failed, return fallback or null (frontend will show initials)
+    return fallbackUrl || null;
   }
 
   clearCache() {

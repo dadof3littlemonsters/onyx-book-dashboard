@@ -133,6 +133,23 @@ const BookDrawer = ({ book, isOpen, onClose, onRequest }) => {
                       <Download size={20} />
                       Submit Request
                     </button>
+
+                    <button
+                      className="request-button request-both"
+                      onClick={() => {
+                        onRequest(book.id, {
+                          title: book.title,
+                          author: book.author,
+                          requestTypes: {
+                            audiobook: true,
+                            ebook: true
+                          }
+                        });
+                      }}
+                    >
+                      <Download size={20} />
+                      Request Both
+                    </button>
                   </div>
                 )}
               </div>

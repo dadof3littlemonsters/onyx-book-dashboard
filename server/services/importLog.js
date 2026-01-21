@@ -3,7 +3,8 @@ const path = require('path');
 
 class ImportLogService {
     constructor() {
-        this.logFile = path.join(__dirname, '../data/import_log.json');
+        // Must match the path used in /app/scripts/process-download.js
+        this.logFile = '/app/data/import_log.json';
     }
 
     getLog() {

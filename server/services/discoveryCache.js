@@ -3,6 +3,7 @@ const path = require('path');
 const googleBooksApi = require('./googleBooksApi');
 const coverResolver = require('./coverResolver');
 const aiBookCurator = require('./aiBookCurator');
+const hardcoverService = require('./hardcoverService');
 
 class DiscoveryCache {
   constructor() {
@@ -298,9 +299,29 @@ class DiscoveryCache {
     for (const book of books) {
       try {
         const coverUrl = await coverResolver.getCoverUrl(book.isbn13, book.thumbnail);
+
+        // Check if rating is missing and try Hardcover as fallback
+        let rating = book.averageRating || 0;
+        if (rating === 0 && (book.isbn13 || book.title)) {
+          try {
+            const hardcoverRating = await hardcoverService.getRating(
+              book.isbn13,
+              book.title,
+              Array.isArray(book.authors) ? book.authors[0] : book.author
+            );
+            if (hardcoverRating) {
+              rating = hardcoverRating;
+              console.log(`[DiscoveryCache] Got Hardcover rating ${rating} for: ${book.title}`);
+            }
+          } catch (ratingError) {
+            // Silently continue without rating
+          }
+        }
+
         enrichedBooks.push({
           ...book,
-          coverUrl
+          coverUrl,
+          averageRating: rating
         });
       } catch (error) {
         console.error(`[DiscoveryCache] Error enriching book ${book.isbn13}:`, error.message);
@@ -348,26 +369,53 @@ class DiscoveryCache {
   }
 
   async getRandomizedBooks(genreKey, count = 50) {
+    const startTime = Date.now();
+    const logPrefix = `[DiscoveryCache] [${new Date().toISOString()}] [${genreKey}]`;
+
     try {
       if (!this.cache) {
+        console.log(`${logPrefix} No cache in memory, loading from file...`);
         await this.loadCacheFromFile();
       }
 
       if (!this.cache || this.isCacheStale()) {
-        console.log('[DiscoveryCache] Cache is stale, generating new cache...');
+        console.log(`${logPrefix} Cache is stale, generating new cache...`);
         await this.generateDailyCache();
       }
 
-      const genreBooks = this.cache.genres[genreKey];
+      const genreBooks = this.cache?.genres?.[genreKey];
       if (!genreBooks || !Array.isArray(genreBooks)) {
-        console.error(`[DiscoveryCache] No books found for genre: ${genreKey}`);
+        console.error(`${logPrefix} ERROR: No books array found.`, {
+          hasCache: !!this.cache,
+          hasGenres: !!this.cache?.genres,
+          availableGenres: this.cache?.genres ? Object.keys(this.cache.genres) : [],
+        });
+        return [];
+      }
+
+      if (genreBooks.length === 0) {
+        console.warn(`${logPrefix} WARNING: Genre exists but has 0 books.`);
         return [];
       }
 
       const shuffled = [...genreBooks].sort(() => Math.random() - 0.5);
-      return shuffled.slice(0, count);
+      const result = shuffled.slice(0, count);
+
+      console.log(`${logPrefix} SUCCESS: Returned ${result.length} books in ${Date.now() - startTime}ms`);
+      return result;
     } catch (error) {
-      console.error(`[DiscoveryCache] Error getting randomized books for ${genreKey}:`, error);
+      console.error(`${logPrefix} FAILURE after ${Date.now() - startTime}ms:`, {
+        errorName: error.name,
+        errorMessage: error.message,
+        stack: error.stack?.split('\n').slice(0, 3).join('\n'),
+      });
+
+      // Try to return stale cache data if available
+      if (this.cache?.genres?.[genreKey]) {
+        console.log(`${logPrefix} FALLBACK: Returning stale cache data`);
+        return this.cache.genres[genreKey].slice(0, count);
+      }
+
       return [];
     }
   }
