@@ -298,7 +298,14 @@ class DiscoveryCache {
 
     for (const book of books) {
       try {
-        const coverUrl = await coverResolver.getCoverUrl(book.isbn13, book.thumbnail);
+        // Pass title and author for fallback search when ISBN fails
+        const author = Array.isArray(book.authors) ? book.authors[0] : book.author;
+        const coverUrl = await coverResolver.getCoverUrl(
+          book.isbn13,
+          book.thumbnail,
+          book.title,
+          author
+        );
 
         // Check if rating is missing and try Hardcover as fallback
         let rating = book.averageRating || 0;
@@ -307,7 +314,7 @@ class DiscoveryCache {
             const hardcoverRating = await hardcoverService.getRating(
               book.isbn13,
               book.title,
-              Array.isArray(book.authors) ? book.authors[0] : book.author
+              author
             );
             if (hardcoverRating) {
               rating = hardcoverRating;
@@ -320,7 +327,7 @@ class DiscoveryCache {
 
         enrichedBooks.push({
           ...book,
-          coverUrl,
+          coverUrl: coverUrl || book.thumbnail || coverResolver.getPlaceholderUrl(),
           averageRating: rating
         });
       } catch (error) {

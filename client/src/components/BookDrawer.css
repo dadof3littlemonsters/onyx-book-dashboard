@@ -120,6 +120,29 @@
   color: #ffd700;
 }
 
+.book-metadata {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem 0;
+  margin-bottom: 1rem;
+  border-top: 1px solid #282828;
+  border-bottom: 1px solid #282828;
+}
+
+.book-meta-item {
+  display: flex;
+  justify-content: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  color: #cccccc;
+}
+
+.meta-label {
+  font-weight: 600;
+  color: #888888;
+}
+
 .book-synopsis {
   text-align: left;
   margin-bottom: 2rem;

@@ -182,6 +182,17 @@ const HomePage = () => {
     setIsBurgerMenuOpen(false);
   };
 
+  const handleCategoryClick = (categoryKey, categoryName) => {
+    // Fetch all books in category and show in expanded view
+    fetch(`/api/books/${categoryKey}`)
+      .then(res => res.json())
+      .then(data => {
+        setSearchResults(data);
+        setSearchQuery(`Category: ${categoryName}`);
+      })
+      .catch(err => console.error('Category fetch error:', err));
+  };
+
   const categories = [
     { name: 'Romantasy', key: 'romantasy' },
     { name: 'Fantasy & High Fantasy', key: 'fantasy' },
@@ -232,7 +243,13 @@ const HomePage = () => {
           <div className="book-categories">
             {categories.map((category) => (
               <div key={category.key} className="category-section">
-                <h2 className="category-title">{category.name}</h2>
+                <h2
+                  className="category-title"
+                  onClick={() => handleCategoryClick(category.key, category.name)}
+                >
+                  {category.name}
+                  <span className="view-all-link">View All →</span>
+                </h2>
                 {category.key === 'personalized' ? (
                   <div className="personalized-placeholder">
                     <p>Coming Soon: Personalized recommendations based on your requests</p>

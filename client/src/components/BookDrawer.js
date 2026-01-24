@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Star, BookOpen, Download, Headphones, Book } from 'lucide-react';
 import toast from 'react-hot-toast';
 import './BookDrawer.css';
@@ -6,6 +6,40 @@ import './BookDrawer.css';
 const BookDrawer = ({ book, isOpen, onClose, onRequest }) => {
   const [requestAudiobook, setRequestAudiobook] = useState(false);
   const [requestEbook, setRequestEbook] = useState(false);
+  const drawerRef = useRef(null);
+  const previousFocusRef = useRef(null);
+
+  // ESC key handler
+  useEffect(() => {
+    const handleEscape = (e) => {
+      if (e.key === 'Escape' && isOpen) {
+        onClose();
+      }
+    };
+
+    if (isOpen) {
+      window.addEventListener('keydown', handleEscape);
+      return () => window.removeEventListener('keydown', handleEscape);
+    }
+  }, [isOpen, onClose]);
+
+  // Focus management
+  useEffect(() => {
+    if (isOpen) {
+      // Save current focus
+      previousFocusRef.current = document.activeElement;
+      // Focus first interactive element in drawer after animation
+      setTimeout(() => {
+        const focusable = drawerRef.current?.querySelector(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        );
+        focusable?.focus();
+      }, 100);
+    } else {
+      // Restore focus when closing
+      previousFocusRef.current?.focus();
+    }
+  }, [isOpen]);
 
   if (!isOpen || !book) return null;
 
@@ -41,8 +75,14 @@ const BookDrawer = ({ book, isOpen, onClose, onRequest }) => {
   };
 
   return (
-    <div className={`drawer-overlay ${isOpen ? 'open' : ''}`} onClick={onClose}>
-      <div className="drawer" onClick={(e) => e.stopPropagation()}>
+    <div
+      className={`drawer-overlay ${isOpen ? 'open' : ''}`}
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="book-title"
+    >
+      <div ref={drawerRef} className="drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
           <button className="close-button" onClick={onClose}>
             <X size={24} />
@@ -72,7 +112,7 @@ const BookDrawer = ({ book, isOpen, onClose, onRequest }) => {
             </div>
 
             <div className="book-meta">
-              <h1 className="book-title-large">{book.title}</h1>
+              <h1 id="book-title" className="book-title-large">{book.title}</h1>
               <p className="book-author-large">by {book.author}</p>
 
               <div className="book-stats">
@@ -85,6 +125,42 @@ const BookDrawer = ({ book, isOpen, onClose, onRequest }) => {
                   <span>{book.pages} pages</span>
                 </div>
               </div>
+
+              {/* Book metadata */}
+              {(book.isbn || book.isbn13 || book.publisher || book.publishedDate || book.publishDate) && (
+                <div className="book-metadata">
+                  {book.isbn && (
+                    <div className="book-meta-item">
+                      <span className="meta-label">ISBN:</span>
+                      <span>{book.isbn}</span>
+                    </div>
+                  )}
+                  {book.isbn13 && book.isbn13 !== book.isbn && (
+                    <div className="book-meta-item">
+                      <span className="meta-label">ISBN-13:</span>
+                      <span>{book.isbn13}</span>
+                    </div>
+                  )}
+                  {book.publisher && (
+                    <div className="book-meta-item">
+                      <span className="meta-label">Publisher:</span>
+                      <span>{book.publisher}</span>
+                    </div>
+                  )}
+                  {book.publishedDate && (
+                    <div className="book-meta-item">
+                      <span className="meta-label">Published:</span>
+                      <span>{new Date(book.publishedDate).getFullYear()}</span>
+                    </div>
+                  )}
+                  {book.publishDate && !book.publishedDate && (
+                    <div className="book-meta-item">
+                      <span className="meta-label">Published:</span>
+                      <span>{new Date(book.publishDate).getFullYear()}</span>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="book-synopsis">
                 <h3>Synopsis</h3>

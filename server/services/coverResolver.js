@@ -8,7 +8,7 @@ class CoverResolver {
     this.hardcoverToken = process.env.HARDCOVER_TOKEN;
   }
 
-  async getCoverUrl(isbn13, fallbackUrl = null) {
+  async getCoverUrl(isbn13, fallbackUrl = null, title = null, author = null) {
     if (!isbn13) {
       return fallbackUrl || this.getPlaceholderUrl();
     }
@@ -21,7 +21,7 @@ class CoverResolver {
     }
 
     try {
-      const coverUrl = await this.tryMultipleSources(isbn13);
+      const coverUrl = await this.tryMultipleSources(isbn13, title, author);
 
       if (coverUrl) {
         this.cache.set(cacheKey, {
@@ -34,10 +34,11 @@ class CoverResolver {
       console.error(`[CoverResolver] Error resolving cover for ISBN ${isbn13}:`, error.message);
     }
 
+    // Always return a valid URL (placeholder or real cover)
     return fallbackUrl || this.getPlaceholderUrl();
   }
 
-  async tryMultipleSources(isbn13) {
+  async tryMultipleSources(isbn13, title = null, author = null) {
     const sources = [
       () => this.tryHardcoverApi(isbn13),
       () => this.tryOpenLibrary(isbn13),
@@ -54,6 +55,20 @@ class CoverResolver {
         }
       } catch (error) {
         // Silently continue to next source
+      }
+    }
+
+    // Fallback to title/author search if ISBN lookup fails
+    if (title && author) {
+      try {
+        console.log(`[CoverResolver] ISBN lookup failed for ${isbn13}, trying title/author search`);
+        const titleUrl = await this.tryTitleSearch(title, author);
+        if (titleUrl) {
+          console.log(`[CoverResolver] Found cover for ${isbn13} via title/author search`);
+          return titleUrl;
+        }
+      } catch (error) {
+        console.log(`[CoverResolver] Title search also failed for ${isbn13}`);
       }
     }
 
@@ -125,8 +140,10 @@ class CoverResolver {
       });
 
       // Check if we got actual image data (not an error page)
+      // Relaxed validation: accept any image content type, not just JPEG
+      // Reduced size threshold from 1000 to 500 bytes to accept more covers
       const contentType = response.headers['content-type'];
-      if (contentType && contentType.includes('image') && response.data.length > 1000) {
+      if (contentType && (contentType.includes('image/') || contentType.includes('jpeg') || contentType.includes('png')) && response.data.length > 500) {
         // Valid image found
         return url;
       }
@@ -180,9 +197,9 @@ class CoverResolver {
   }
 
   getPlaceholderUrl() {
-    // Return a data URL that signals to frontend to use initials placeholder
-    // This avoids relying on external placeholder services
-    return null;
+    // Return a proper placeholder URL instead of null
+    // Using via.placeholder for reliable fallback when all sources fail
+    return 'https://via.placeholder.com/200x300/1a1a1a/888888?text=No+Cover';
   }
 
   // Search by title/author when ISBN lookup fails

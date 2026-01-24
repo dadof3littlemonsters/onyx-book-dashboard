@@ -49,13 +49,14 @@ const Header = ({
 
                 {showSearch && (
                     <div className="search-container-centered">
-                        <Search className="search-icon" size={20} />
+                        <Search className="search-icon" size={20} aria-hidden="true" />
                         <input
                             type="text"
                             placeholder="Search for books..."
                             value={searchQuery}
                             onChange={onSearchChange}
                             className="search-input"
+                            aria-label="Search for books"
                         />
                     </div>
                 )}
@@ -64,25 +65,42 @@ const Header = ({
                     <div className="header-right">
                         <span className="username">{selectedUser.username}</span>
                         <div className="burger-menu-container">
-                            <button onClick={handleBurgerMenuToggle} className="burger-menu-button">
+                            <button
+                              onClick={handleBurgerMenuToggle}
+                              className="burger-menu-button"
+                              aria-label="Open menu"
+                              aria-expanded={isBurgerMenuOpen}
+                            >
                                 <Menu size={20} />
                             </button>
                             {isBurgerMenuOpen && (
                                 <>
-                                    <div className="burger-menu-overlay" onClick={closeBurgerMenu}></div>
-                                    <div className="burger-menu">
+                                    <div className="burger-menu-overlay" onClick={closeBurgerMenu} aria-hidden="true"></div>
+                                    <div className="burger-menu" role="menu" aria-label="User menu">
                                         {onAdminClick && (
-                                            <button onClick={() => { onAdminClick(); closeBurgerMenu(); }} className="burger-menu-item">
-                                                <Settings size={18} />
+                                            <button
+                                              onClick={() => { onAdminClick(); closeBurgerMenu(); }}
+                                              className="burger-menu-item"
+                                              role="menuitem"
+                                            >
+                                                <Settings size={18} aria-hidden="true" />
                                                 Admin Panel
                                             </button>
                                         )}
-                                        <button onClick={() => { onUserChange(); closeBurgerMenu(); }} className="burger-menu-item">
-                                            <User size={18} />
+                                        <button
+                                          onClick={() => { onUserChange(); closeBurgerMenu(); }}
+                                          className="burger-menu-item"
+                                          role="menuitem"
+                                        >
+                                            <User size={18} aria-hidden="true" />
                                             Change User
                                         </button>
-                                        <button onClick={() => { onLogout(); closeBurgerMenu(); }} className="burger-menu-item">
-                                            <LogOut size={18} />
+                                        <button
+                                          onClick={() => { onLogout(); closeBurgerMenu(); }}
+                                          className="burger-menu-item"
+                                          role="menuitem"
+                                        >
+                                            <LogOut size={18} aria-hidden="true" />
                                             Logout
                                         </button>
                                     </div>

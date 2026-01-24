@@ -130,6 +130,30 @@
   color: #ffffff;
   margin-bottom: 0.5rem;
   padding-left: 0.5rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  user-select: none;
+}
+
+.category-title:hover {
+  color: #ffd700;
+}
+
+.category-title:hover .view-all-link {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.view-all-link {
+  font-size: 0.85rem;
+  opacity: 0;
+  transform: translateX(-10px);
+  transition: all 0.2s ease;
+  color: #888888;
+  font-weight: normal;
 }
 
 @media (max-width: 768px) {

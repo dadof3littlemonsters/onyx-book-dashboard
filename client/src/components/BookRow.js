@@ -85,7 +85,11 @@ const BookRow = ({ category, books, onBookSelect }) => {
   if (loading) {
     return (
       <div className="book-row">
-        <div className="loading">Loading books...</div>
+        <div className="loading-skeleton">
+          {[1, 2, 3, 4, 5].map((i) => (
+            <div key={i} className="skeleton-card" />
+          ))}
+        </div>
       </div>
     );
   }

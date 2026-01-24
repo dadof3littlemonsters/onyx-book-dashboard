@@ -897,7 +897,11 @@ app.get('/api/proxy-image', async (req, res) => {
     'images-eu.ssl-images-amazon.com',
     'images-fe.ssl-images-amazon.com',
     'm.media-amazon.com',
-    'images.amazon.com'
+    'images.amazon.com',
+    'books.google.com',
+    'storage.googleapis.com',
+    'lh3.googleusercontent.com',
+    'covers.googleapis.com'
   ];
 
   try {
@@ -945,7 +949,18 @@ app.get('/api/proxy-image', async (req, res) => {
     console.log(`[IMAGE-PROXY] Successfully proxied image: ${response.status} ${response.headers['content-type']}`);
 
   } catch (error) {
-    console.error(`[IMAGE-PROXY] Error proxying image:`, error.message);
+    // Log detailed error info for debugging
+    console.error(`[IMAGE-PROXY] Failed to proxy ${url}:`, {
+      error: error.message,
+      code: error.code,
+      hostname: (() => {
+        try {
+          return new URL(url).hostname;
+        } catch {
+          return 'unknown';
+        }
+      })()
+    });
 
     // Return transparent pixel on any error
     res.set('Content-Type', 'image/png');
