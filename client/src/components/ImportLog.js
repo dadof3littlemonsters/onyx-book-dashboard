@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { FileCheck, AlertCircle, HardDrive, Trash2, Home } from 'lucide-react';
+import toast from 'react-hot-toast';
 import Header from './Header';
 import './AdminPanel.css';
 
@@ -49,7 +50,7 @@ const ImportLog = () => {
             fetchStats();
         } catch (error) {
             console.error('Error cleaning up:', error);
-            alert('Failed to cleanup import log');
+            toast.error('Failed to cleanup import log');
         }
     };
 

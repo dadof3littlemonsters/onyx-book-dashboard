@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Shield, Search, Download, Clock, X, MessageCircle } from 'lucide-react';
+import toast from 'react-hot-toast';
 import Header from './Header';
 import './AdminPanel.css';
 
@@ -52,11 +53,11 @@ const AdminDashboard = () => {
         setIsAuthenticated(true);
         setPin('');
       } else {
-        alert('Invalid PIN');
+        toast.error('Invalid PIN');
       }
     } catch (error) {
       console.error('Login error:', error);
-      alert('Login failed');
+      toast.error('Login failed');
     }
   };
 
@@ -77,7 +78,7 @@ const AdminDashboard = () => {
       : request.title;
 
     if (!effectiveQuery || !effectiveQuery.trim()) {
-      alert('Please enter a search query');
+      toast.error('Please enter a search query');
       return;
     }
 
@@ -99,11 +100,11 @@ const AdminDashboard = () => {
       if (result.success) {
         setSearchResults(result.results);
       } else {
-        alert('Search failed: ' + result.message);
+        toast.error('Search failed: ' + result.message);
       }
     } catch (error) {
       console.error('Search error:', error);
-      alert('Search failed');
+      toast.error('Search failed');
     } finally {
       setLoading(false);
     }
@@ -136,16 +137,16 @@ const AdminDashboard = () => {
       const downloadResult = await response.json();
 
       if (downloadResult.success) {
-        alert('Download started successfully!');
+        toast.success('Download started successfully!');
         setSearchResults([]);
         setActiveRequest(null);
         fetchRequests();
       } else {
-        alert('Download failed: ' + downloadResult.message);
+        toast.error('Download failed: ' + downloadResult.message);
       }
     } catch (error) {
       console.error('Download error:', error);
-      alert('Download failed');
+      toast.error('Download failed');
     } finally {
       setLoading(false);
     }
@@ -181,13 +182,13 @@ const AdminDashboard = () => {
       });
       const result = await response.json();
       if (result.success) {
-        alert('Code sent to your Telegram app!');
+        toast.success('Code sent to your Telegram app!');
         fetchTelegramStatus();
       } else {
-        alert('Failed: ' + result.message);
+        toast.error('Failed: ' + result.message);
       }
     } catch (error) {
-      alert('Error: ' + error.message);
+      toast.error('Error: ' + error.message);
     } finally {
       setLoading(false);
     }
@@ -203,16 +204,16 @@ const AdminDashboard = () => {
       });
       const result = await response.json();
       if (result.success) {
-        alert('Telegram connected!');
+        toast.success('Telegram connected!');
         setShowTelegramAuth(false);
         fetchTelegramStatus();
       } else if (result.needsPassword) {
         fetchTelegramStatus();
       } else {
-        alert('Failed: ' + result.message);
+        toast.error('Failed: ' + result.message);
       }
     } catch (error) {
-      alert('Error: ' + error.message);
+      toast.error('Error: ' + error.message);
     } finally {
       setLoading(false);
     }
@@ -228,14 +229,14 @@ const AdminDashboard = () => {
       });
       const result = await response.json();
       if (result.success) {
-        alert('Telegram connected with 2FA!');
+        toast.success('Telegram connected with 2FA!');
         setShowTelegramAuth(false);
         fetchTelegramStatus();
       } else {
-        alert('Failed: ' + result.message);
+        toast.error('Failed: ' + result.message);
       }
     } catch (error) {
-      alert('Error: ' + error.message);
+      toast.error('Error: ' + error.message);
     } finally {
       setLoading(false);
     }

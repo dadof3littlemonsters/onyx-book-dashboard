@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Search, User, LogOut, Menu, Settings } from 'lucide-react';
+import toast from 'react-hot-toast';
 import BookRow from './BookRow';
 import BookDrawer from './BookDrawer';
 import UserSelector from './UserSelector';
@@ -14,6 +15,7 @@ const HomePage = () => {
   const [selectedUser, setSelectedUser] = useState(null);
   const [isUserSelectorOpen, setIsUserSelectorOpen] = useState(false);
   const [isBurgerMenuOpen, setIsBurgerMenuOpen] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
     const timeoutId = setTimeout(() => {
@@ -65,6 +67,30 @@ const HomePage = () => {
     };
   }, [isBurgerMenuOpen]);
 
+  // Check admin status from server
+  useEffect(() => {
+    const checkAdminStatus = async () => {
+      try {
+        const response = await fetch('/api/user/is-admin');
+        if (response.ok) {
+          const data = await response.json();
+          setIsAdmin(data.isAdmin);
+        } else {
+          setIsAdmin(false);
+        }
+      } catch (error) {
+        console.error('Failed to check admin status:', error);
+        setIsAdmin(false);
+      }
+    };
+
+    if (selectedUser) {
+      checkAdminStatus();
+    } else {
+      setIsAdmin(false);
+    }
+  }, [selectedUser]);
+
   const handleBookSelect = (book) => {
     setSelectedBook(book);
     setIsDrawerOpen(true);
@@ -104,14 +130,14 @@ const HomePage = () => {
         if (requestData?.requestTypes?.ebook) requestTypes.push('ebook');
         const formatText = requestTypes.join(' and ');
 
-        alert(`${formatText} request submitted successfully! An admin will review your request.`);
+        toast.success(`${formatText} request submitted successfully! An admin will review your request.`);
         setIsDrawerOpen(false);
       } else {
-        alert('Failed to submit book request');
+        toast.error('Failed to submit book request');
       }
     } catch (error) {
       console.error('Request error:', error);
-      alert('Error submitting book request');
+      toast.error('Error submitting book request');
     }
   };
 
@@ -177,7 +203,7 @@ const HomePage = () => {
         showSearch={true}
         selectedUser={selectedUser}
         onUserChange={() => setIsUserSelectorOpen(true)}
-        onAdminClick={selectedUser?.username.toLowerCase() === 'craig' ? handleAdminClick : null}
+        onAdminClick={isAdmin ? handleAdminClick : null}
         onLogout={handleLogout}
         onLogoClick={handleLogoClick}
         isBurgerMenuOpen={isBurgerMenuOpen}

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User, X, Check } from 'lucide-react';
+import toast from 'react-hot-toast';
 import './UserSelector.css';
 
 const UserSelector = ({ isOpen, onClose, onSelectUser }) => {
@@ -50,7 +51,7 @@ const UserSelector = ({ isOpen, onClose, onSelectUser }) => {
 
   const handleSelectUser = () => {
     if (!selectedUserId) {
-      alert('Please select a user');
+      toast.error('Please select a user');
       return;
     }
 

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { X, Star, BookOpen, Download, Headphones, Book } from 'lucide-react';
+import toast from 'react-hot-toast';
 import './BookDrawer.css';
 
 const BookDrawer = ({ book, isOpen, onClose, onRequest }) => {
@@ -25,7 +26,7 @@ const BookDrawer = ({ book, isOpen, onClose, onRequest }) => {
 
   const handleRequest = () => {
     if (!requestAudiobook && !requestEbook) {
-      alert('Please select at least one format (Audiobook or Ebook)');
+      toast.error('Please select at least one format (Audiobook or Ebook)');
       return;
     }
 

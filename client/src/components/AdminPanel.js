@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Shield, Search, Download, Clock, CheckCircle, X } from 'lucide-react';
+import toast from 'react-hot-toast';
 import './AdminPanel.css';
 
 const AdminPanel = ({ isOpen, onClose }) => {
@@ -34,11 +35,11 @@ const AdminPanel = ({ isOpen, onClose }) => {
         setIsAuthenticated(true);
         setPin('');
       } else {
-        alert('Invalid PIN');
+        toast.error('Invalid PIN');
       }
     } catch (error) {
       console.error('Login error:', error);
-      alert('Login failed');
+      toast.error('Login failed');
     }
   };
 
@@ -54,7 +55,7 @@ const AdminPanel = ({ isOpen, onClose }) => {
 
   const handleSearch = async (request) => {
     if (!searchQuery.trim()) {
-      alert('Please enter a search query');
+      toast.error('Please enter a search query');
       return;
     }
 
@@ -76,11 +77,11 @@ const AdminPanel = ({ isOpen, onClose }) => {
       if (result.success) {
         setSearchResults(result.results);
       } else {
-        alert('Search failed: ' + result.message);
+        toast.error('Search failed: ' + result.message);
       }
     } catch (error) {
       console.error('Search error:', error);
-      alert('Search failed');
+      toast.error('Search failed');
     } finally {
       setLoading(false);
     }
@@ -108,16 +109,16 @@ const AdminPanel = ({ isOpen, onClose }) => {
       const downloadResult = await response.json();
 
       if (downloadResult.success) {
-        alert('Download started successfully!');
+        toast.success('Download started successfully!');
         setSearchResults([]);
         setActiveRequest(null);
         fetchRequests();
       } else {
-        alert('Download failed: ' + downloadResult.message);
+        toast.error('Download failed: ' + downloadResult.message);
       }
     } catch (error) {
       console.error('Download error:', error);
-      alert('Download failed');
+      toast.error('Download failed');
     } finally {
       setLoading(false);
     }

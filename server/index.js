@@ -2,9 +2,11 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const path = require('path');
 const axios = require('axios');
 const crypto = require('crypto');
+const { execFile } = require('child_process');
 const prowlarrService = require('./services/prowlarr');
 const qbittorrentService = require('./services/qbittorrent');
 const dataStore = require('./services/dataStore');
@@ -21,6 +23,23 @@ const directDownloadService = require('./services/directDownload');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// --- Process-level Error Handlers ---
+// Prevents server from crashing on unhandled rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[UNHANDLED REJECTION] at:', promise, 'reason:', reason);
+  // Don't exit - log and continue
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('[UNCAUGHT EXCEPTION]', error);
+  // Log but don't crash immediately - give time to cleanup
+  // In production, you might want to exit gracefully after logging
+  if (process.env.NODE_ENV === 'production') {
+    // Give time for logging, then exit
+    setTimeout(() => process.exit(1), 1000);
+  }
+});
 
 // Initialize services
 const metadataAggregator = new MetadataAggregator();
@@ -43,6 +62,15 @@ app.use(helmet({
 }));
 app.use(cors());
 app.use(express.json());
+
+// Rate limiter for login endpoint - prevents brute force attacks
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 attempts per window
+  message: 'Too many login attempts, please try again later',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 app.use((req, res, next) => {
   console.log(`[REQ] ${req.method} ${req.url}`);
   next();
@@ -113,6 +141,14 @@ function requireAdmin(req, res, next) {
 
   return res.status(401).json({ error: 'Admin authentication required' });
 }
+
+// Check if current user is admin (for client-side UI)
+app.get('/api/user/is-admin', requireAdmin, (req, res) => {
+  // If we reach here, user is authenticated as admin
+  res.json({
+    isAdmin: true
+  });
+});
 
 
 // --- Admin auth (PIN-backed signed cookie) ---
@@ -218,6 +254,47 @@ app.get('/api/book/:id', (req, res) => {
   res.status(410).json({
     error: 'Endpoint removed',
     message: 'Use /api/search or /api/books/:category (Hardcover-only).'
+  });
+});
+
+// Webhook endpoint for qBittorrent download completion
+app.post('/api/webhook/download-complete', async (req, res) => {
+  const { hash, name, path: contentPath, tracker, category } = req.body;
+
+  console.log(`[WEBHOOK] Download complete: ${name}`);
+  console.log(`  Path: ${contentPath} | Tracker: ${tracker} | Category: ${category}`);
+
+  if (!contentPath) {
+    return res.status(400).json({ error: 'Missing path parameter' });
+  }
+
+  // Sanitize inputs to prevent command injection
+  const sanitizeString = (str, allowedChars = '[\\w\\s\\-._]') => {
+    return (str || '').replace(new RegExp(`[^${allowedChars}]`, 'g'), '');
+  };
+
+  const sanitizePath = (str) => {
+    // Allow path characters: alphanumeric, spaces, slashes, dots, hyphens, underscores
+    return (str || '').replace(/[^\w\s\/._\-]/g, '');
+  };
+
+  const sanitizedHash = sanitizeString(hash || 'webhook');
+  const sanitizedName = sanitizeString(name);
+  const sanitizedPath = sanitizePath(contentPath);
+  const sanitizedTracker = sanitizeString(tracker || 'unknown');
+  const sanitizedCategory = sanitizeString(category || 'books');
+
+  // Use execFile with argument array instead of execSync with string interpolation
+  // This prevents command injection attacks
+  execFile('node', ['/app/scripts/process-download.js', sanitizedHash, sanitizedName, sanitizedPath, sanitizedTracker, sanitizedCategory], {
+    timeout: 60000
+  }, (error, stdout, stderr) => {
+    if (error) {
+      console.error(`[WEBHOOK] Processing error:`, error.message);
+      return res.status(500).json({ error: error.message, output: stdout });
+    }
+    console.log(`[WEBHOOK] Processing result:`, stdout);
+    res.json({ success: true, output: stdout });
   });
 });
 
@@ -434,8 +511,19 @@ app.get('/api/discovery/stats', async (req, res) => {
   }
 });
 
+// Health check endpoint for monitoring
+app.get('/api/health', (req, res) => {
+  res.status(200).json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV || 'development',
+    memory: process.memoryUsage()
+  });
+});
+
 // Admin routes
-app.post('/api/admin/login', (req, res) => {
+app.post('/api/admin/login', loginLimiter, (req, res) => {
   const { pin } = req.body;
   const adminPin = getAdminSecret();
 
@@ -954,6 +1042,34 @@ app.get('/api/abs/libraries', async (req, res) => {
       error: error.message
     });
   }
+});
+
+// --- Global Error Handler ---
+// Must be AFTER all routes and BEFORE app.listen
+app.use((err, req, res, next) => {
+  console.error('[UNHANDLED ERROR]', err);
+
+  // Don't send error details in production
+  const message = process.env.NODE_ENV === 'production'
+    ? 'Internal server error'
+    : err.message;
+
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  res.status(500).json({
+    success: false,
+    error: message
+  });
+});
+
+// Catch 404s for API routes
+app.use('/api/*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'API endpoint not found'
+  });
 });
 
 // Serve static files from React build in production
