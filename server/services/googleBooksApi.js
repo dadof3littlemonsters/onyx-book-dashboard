@@ -365,7 +365,7 @@ class GoogleBooksApi {
         .replace(/[^\w\s]/gu, '')         // strip punctuation
         .replace(/\s+/g, ' ')
         .trim();
-      const firstAuthor = (Array.isArray(book.authors) ? book.authors[0] : '')
+      const firstAuthor = (Array.isArray(book.authors) ? (book.authors[0] || '') : '')
         .toLowerCase()
         .replace(/[^\w\s]/gu, '')
         .replace(/\s+/g, ' ')

@@ -93,7 +93,7 @@ class DiscoveryCache {
             // Find best match by comparing title and author similarity
             const bestMatch = results.find(b =>
               b.title && b.title.toLowerCase().includes(title.toLowerCase()) &&
-              b.authors && b.authors.some(a => a.toLowerCase().includes(author.toLowerCase()))
+              b.authors && b.authors.some(a => a && a.toLowerCase().includes(author.toLowerCase()))
             ) || results[0];
 
             googleBook = bestMatch;
@@ -648,11 +648,81 @@ class DiscoveryCache {
       throw new Error(`Genre refresh failed for "${genreKey}": ${result.error}`);
     }
 
-    // Merge: replace only this genre's slot, leave all others untouched
-    const previousCount = Array.isArray(cache.genres[genreKey])
-      ? cache.genres[genreKey].length
-      : 0;
-    cache.genres[genreKey] = result.books;
+    // --- Additive merge ---
+    // Existing books are preserved. Newly scraped books are added to the pool.
+    // Duplicates are detected by ISBN13 (primary) then normalised title+author
+    // (secondary, same pattern as deduplicateByIsbn13 in googleBooksApi.js).
+    // When a duplicate is found the existing entry is replaced only if the
+    // incoming one has a better cover or a higher rating.
+
+    const existingBooks = Array.isArray(cache.genres[genreKey])
+      ? [...cache.genres[genreKey]]
+      : [];
+    const previousCount = existingBooks.length;
+
+    // Normalisation helper - mirrors deduplicateByIsbn13 secondary-pass logic
+    const normBookKey = (book) => {
+      const t = (book.title || '')
+        .toLowerCase()
+        .replace(/\s*[:|-]\s*.*/u, '')
+        .replace(/[^\w\s]/gu, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const a = (Array.isArray(book.authors) ? (book.authors[0] || '') : '')
+        .toLowerCase()
+        .replace(/[^\w\s]/gu, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      return `${t}|${a}`;
+    };
+
+    const isBetterEntry = (incoming, current) => {
+      const incomingHasCover = !!(incoming.coverUrl && !incoming.coverUrl.includes('placeholder'));
+      const currentHasCover = !!(current.coverUrl && !current.coverUrl.includes('placeholder'));
+      if (incomingHasCover && !currentHasCover) return true;
+      return (incoming.averageRating || 0) > (current.averageRating || 0);
+    };
+
+    // Build indices into the merged array for fast duplicate lookup
+    const isbnIndex = new Map();
+    const normIndex = new Map();
+    const merged = [...existingBooks];
+
+    for (let i = 0; i < merged.length; i++) {
+      const b = merged[i];
+      if (b.isbn13) isbnIndex.set(b.isbn13, i);
+      normIndex.set(normBookKey(b), i);
+    }
+
+    let genuinelyNew = 0;
+    let deduplicated = 0;
+
+    for (const newBook of result.books) {
+      // Check by ISBN first (most reliable dedup key)
+      let existingIdx = newBook.isbn13 ? isbnIndex.get(newBook.isbn13) : undefined;
+      // Fall back to normalised title+author
+      if (existingIdx === undefined) {
+        existingIdx = normIndex.get(normBookKey(newBook));
+      }
+
+      if (existingIdx !== undefined) {
+        // Already in pool - update only if the new entry is strictly better
+        if (isBetterEntry(newBook, merged[existingIdx])) {
+          merged[existingIdx] = newBook;
+        }
+        deduplicated++;
+      } else {
+        // Genuinely new - append and register in both indices
+        const idx = merged.length;
+        merged.push(newBook);
+        if (newBook.isbn13) isbnIndex.set(newBook.isbn13, idx);
+        normIndex.set(normBookKey(newBook), idx);
+        genuinelyNew++;
+      }
+    }
+
+    // Replace only this genre's slot; all other genres are untouched
+    cache.genres[genreKey] = merged;
     cache.lastRefreshedGenre = genreKey;
     cache.lastRefreshedAt = new Date().toISOString();
 
@@ -661,17 +731,18 @@ class DiscoveryCache {
     this.cache = cache;
     this.lastGenerated = new Date();
 
-    const booksAdded = result.books.length;
+    const totalInGenre = merged.length;
     const elapsed = Date.now() - startTime;
     console.log(
       `[DiscoveryCache] refreshGenre: "${genreKey}" complete in ${elapsed}ms` +
-      ` — ${booksAdded} books now in genre (was ${previousCount})`
+      ` — before: ${previousCount}, scraped: ${result.books.length},` +
+      ` new: ${genuinelyNew}, duplicates: ${deduplicated}, total: ${totalInGenre}`
     );
 
     return {
       genre: genreKey,
-      booksAdded,
-      totalInGenre: booksAdded,
+      booksAdded: genuinelyNew,
+      totalInGenre,
       generatedAt: cache.lastRefreshedAt
     };
   }
