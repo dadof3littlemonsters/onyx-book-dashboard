@@ -158,6 +158,15 @@ class DiscoveryCache {
             continue;
           }
 
+          // Normalize author string field from authors array so downstream
+          // code that reads book.author gets a value (Google Books only
+          // populates the `authors` array, not a flat `author` field).
+          if (!enrichedBook.author) {
+            enrichedBook.author = Array.isArray(enrichedBook.authors) && enrichedBook.authors[0]
+              ? enrichedBook.authors[0]
+              : (resolvedAuthor || '');
+          }
+
           enrichedBooks.push(enrichedBook);
           foundCount++;
           console.log(`[DiscoveryCache] ✓ Enriched: "${googleBook.title}" by ${resolvedAuthor}`);
@@ -427,6 +436,13 @@ class DiscoveryCache {
           if (!validation.valid) {
             console.log(`[DiscoveryCache] Awards: dropped (validation): "${enrichedBook.title}" - ${validation.reason}`);
             continue;
+          }
+
+          // Normalize author string field (same as enrichWithGoogleBooks)
+          if (!enrichedBook.author) {
+            enrichedBook.author = Array.isArray(enrichedBook.authors) && enrichedBook.authors[0]
+              ? enrichedBook.authors[0]
+              : '';
           }
 
           books.push(enrichedBook);

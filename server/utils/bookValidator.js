@@ -4,8 +4,13 @@
  * All checks must pass for a book to be accepted.
  */
 
+/**
+ * Patterns that identify multi-book bundles / box sets / series collections.
+ * Any title match → rejected.
+ */
 const COLLECTION_PATTERNS = [
-  /box\s*set/i,
+  /box\s*set/i,            // "box set", "boxset"
+  /boxed\s+set/i,          // "Boxed Set" (distinct from box\s*set which misses the 'd')
   /\bcollection\b/i,
   /\bomnibus\b/i,
   /complete\s+series/i,
@@ -15,9 +20,17 @@ const COLLECTION_PATTERNS = [
   /\d-book\b/i,
   /trilogy\s+collection/i,
   /series\s+collection/i,
+  /starter\s+bundle/i,     // "Sarah J. Maas Starter Bundle"
+  /fantasy\s+firsts/i,     // "Brandon Sanderson's Fantasy Firsts"
 ];
 
+/**
+ * Patterns that identify non-book items: merch, journals, stationery,
+ * summaries, foreign-language editions, adaptation tie-ins, craft guides, etc.
+ * Any title match → rejected.
+ */
 const NON_BOOK_PATTERNS = [
+  // Physical / stationery items
   /\bjournal\b/i,
   /\bnotebook\b/i,
   /\bplanner\b/i,
@@ -26,6 +39,45 @@ const NON_BOOK_PATTERNS = [
   /activity\s+book/i,
   /\bworkbook\b/i,
   /\bstationery\b/i,
+
+  // Summaries / study guides
+  /\bsummary\s+of\b/i,     // "Summary of Morning Star", "Summary of Bookshops…"
+
+  // Anthology / pack labels
+  /\bsuper\s+pack\b/i,     // "Science Fiction Super Pack #1"
+
+  // "Presents the great…" / "Presents:" anthology introductions
+  /presents\s+the\s+great/i,
+  /\bpresents\s*:/i,       // "Fantastic Stories Presents: …"
+
+  // Foreign-language editions (these slip past langRestrict on Google Books)
+  /\baudgave\b/i,          // Danish/Norwegian "edition"
+  /\budg[aå]va\b/i,        // Swedish "edition"
+  /ausgabe/i,              // German "edition" (Ausgabe, Gesamtausgabe, etc.)
+  /Edici[oó]n\b/i,         // Spanish "Edición"
+  /\bNemira\b/i,           // Romanian publisher name frequently in title
+  /\bitaliano\b/i,
+  /\bdeutsch(e)?\b/i,
+
+  // Romanian/Spanish word for "series" — appears as a title suffix
+  // (but must NOT fire on the English word "series" → use \bserie\b not /series/)
+  /\bserie\b/i,
+
+  // Auction / collector catalogues
+  /auction\s+catalog/i,
+  /grand\s+format/i,
+
+  // Year-based yearbook / annual titles
+  /\bdas\s+jahr\b/i,       // German yearbook
+  /\byear\s+\d{4}/i,       // "Year 2020 …"
+
+  // Graphic-novel adaptations of prose works
+  /graphic\s+novel\s+adaptation/i,
+
+  // Writing-craft / how-to books (no fiction genre carries these)
+  /\bwriting\s+magic\b/i,
+  /\bguide\s+to\s+writing\b/i,
+  /\bhow\s+to\s+write\b/i,
 ];
 
 /**
