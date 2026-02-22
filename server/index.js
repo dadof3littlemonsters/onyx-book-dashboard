@@ -237,6 +237,52 @@ app.get('/api/books/:category', async (req, res) => {
       }));
     }
 
+    // Deduplicate at the API response level (does not mutate cache data).
+    // Primary key: isbn13. Secondary key: normalised title (lowercase,
+    // punctuation stripped, parenthetical/bracket suffixes removed).
+    // When two entries collide, the one with a coverUrl is preferred.
+    {
+      const normTitle = (t) =>
+        (t || '')
+          .toLowerCase()
+          .replace(/\s*[\[(][^\])\]]*[\])]\s*/g, ' ') // remove (…) and […]
+          .replace(/[^\w\s]/g, ' ')                    // strip punctuation
+          .replace(/\s+/g, ' ')
+          .trim();
+
+      const isbnSeen  = new Map(); // isbn → index in deduped[]
+      const titleSeen = new Map(); // normTitle → index in deduped[]
+      const deduped   = [];
+
+      for (const book of books) {
+        const isbn  = book.isbn13 || null;
+        const norm  = normTitle(book.title);
+        const hasCover = !!(book.coverUrl);
+
+        // Check for a collision
+        let collisionIdx =
+          (isbn && isbnSeen.has(isbn))   ? isbnSeen.get(isbn)   :
+          (norm && titleSeen.has(norm))   ? titleSeen.get(norm)  :
+          undefined;
+
+        if (collisionIdx !== undefined) {
+          // Replace existing entry only if current book has a cover and existing doesn't
+          if (hasCover && !deduped[collisionIdx].coverUrl) {
+            deduped[collisionIdx] = book;
+          }
+          continue;
+        }
+
+        // New entry
+        const idx = deduped.length;
+        deduped.push(book);
+        if (isbn) isbnSeen.set(isbn, idx);
+        if (norm) titleSeen.set(norm, idx);
+      }
+
+      books = deduped.slice(0, 50);
+    }
+
     // Apply search filter if provided (client-side convenience)
     if (search) {
       const q = search.toLowerCase();
