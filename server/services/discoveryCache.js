@@ -117,10 +117,13 @@ class DiscoveryCache {
             resolvedAuthor
           );
 
-          // Use better cover if available, otherwise use Goodreads cover
-          enrichedBook.coverUrl = (betterCover && !betterCover.includes('placeholder'))
-            ? betterCover
-            : (goodreadsCoverUrl || googleBook.thumbnail || betterCover);
+          // Cover priority:
+          // 1. coverResolver result (Hardcover → OpenLibrary → Google Books → Amazon) — best quality
+          // 2. goodreadsCoverUrl — server can proxy it; client routes gr-assets.com through /api/proxy-image
+          // 3. Google Books thumbnail — direct browser access, no proxy needed
+          // null → book is dropped below (Fix 4)
+          const resolvedCover = (betterCover && !betterCover.includes('placeholder')) ? betterCover : null;
+          enrichedBook.coverUrl = resolvedCover || goodreadsCoverUrl || googleBook.thumbnail || null;
 
           // Fix 4: Drop books with no resolvable cover
           if (!enrichedBook.coverUrl) {

@@ -19,6 +19,10 @@ const BookRow = ({ category, books, onBookSelect }) => {
     if (typeof cover === 'string' && cover.includes('hardcover.app')) {
       return `/api/proxy-image?url=${encodeURIComponent(cover)}`;
     }
+    // Goodreads CDN blocks direct hotlinking from browsers — proxy via server
+    if (typeof cover === 'string' && (cover.includes('images.gr-assets.com') || cover.includes('i.gr-assets.com'))) {
+      return `/api/proxy-image?url=${encodeURIComponent(cover)}`;
+    }
     // For other http URLs, try direct first (browser will handle CORS)
     if (typeof cover === 'string' && cover.startsWith('http')) {
       return cover;
