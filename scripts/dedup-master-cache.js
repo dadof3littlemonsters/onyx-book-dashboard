@@ -20,6 +20,7 @@
 
 const fs   = require('fs').promises;
 const path = require('path');
+const { validateBook } = require('../server/utils/bookValidator');
 
 const CACHE_PATH = path.join(__dirname, '../data/master_book_cache.json');
 
@@ -71,6 +72,21 @@ async function main() {
   const books = cache.books || {};
   const totalBefore = Object.keys(books).length;
   console.log(`[DedupMaster] ${totalBefore} books before dedup`);
+
+  // ── Step 0: drop invalid entries ────────────────────────────────────────────
+
+  let droppedValidation = 0;
+  for (const [key, book] of Object.entries(books)) {
+    const v = validateBook(book);
+    if (!v.valid) {
+      console.log(`[DedupMaster] Dropped (validation): "${book.title}" — ${v.reason}`);
+      delete books[key];
+      droppedValidation++;
+    }
+  }
+  if (droppedValidation > 0) {
+    console.log(`[DedupMaster] Dropped ${droppedValidation} invalid entries before dedup`);
+  }
 
   // ── Step 1: group by normTitle ─────────────────────────────────────────────
 

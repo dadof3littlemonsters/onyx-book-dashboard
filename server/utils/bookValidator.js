@@ -42,6 +42,10 @@ const NON_BOOK_PATTERNS = [
 
   // Summaries / study guides
   /\bsummary\s+of\b/i,     // "Summary of Morning Star", "Summary of Bookshops…"
+  /summary\s*(?:and|&)\s*analysis/i,  // "Summary and Analysis of Ready Player One"
+
+  // Combined / semicolon-joined multi-book titles ("Eragon; Eldest")
+  /\w;\s+\w/,
 
   // Anthology / pack labels
   /\bsuper\s+pack\b/i,     // "Science Fiction Super Pack #1"
@@ -51,6 +55,7 @@ const NON_BOOK_PATTERNS = [
   /\bpresents\s*:/i,       // "Fantastic Stories Presents: …"
 
   // Foreign-language editions (these slip past langRestrict on Google Books)
+  /\bsakrileg\b/i,         // German title for "The Da Vinci Code"
   /\baudgave\b/i,          // Danish/Norwegian "edition"
   /\budg[aå]va\b/i,        // Swedish "edition"
   /ausgabe/i,              // German "edition" (Ausgabe, Gesamtausgabe, etc.)
