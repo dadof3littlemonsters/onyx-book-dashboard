@@ -153,12 +153,15 @@ class MasterBookCache {
         lastVerified: now
       };
 
+      let bookKey;
       if (isbn) {
         this.cache.books[isbn] = bookData;
+        bookKey = isbn;
       } else {
         // For books without ISBN, use a generated key
         const tempKey = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
         this.cache.books[tempKey] = bookData;
+        bookKey = tempKey;
       }
 
       // Update genre index
@@ -167,9 +170,8 @@ class MasterBookCache {
           this.cache.genreIndex[genre] = [];
           this.cache.stats.totalGenres++;
         }
-        const key = isbn || this.cache.books[isbn || Object.keys(this.cache.books).pop()];
-        if (!this.cache.genreIndex[genre].includes(key)) {
-          this.cache.genreIndex[genre].push(key);
+        if (!this.cache.genreIndex[genre].includes(bookKey)) {
+          this.cache.genreIndex[genre].push(bookKey);
         }
         this.cache.stats.booksByGenre[genre] = (this.cache.stats.booksByGenre[genre] || 0) + 1;
       }

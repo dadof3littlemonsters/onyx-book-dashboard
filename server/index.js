@@ -183,9 +183,9 @@ app.get('/api/books/:category', async (req, res) => {
         'dystopian': 'scifi',
         'scifi': 'scifi',
         'sciFi': 'scifi',
-        'cozy': 'cozy',
-        'cozy_fantasy': 'cozy',
-        'palateCleanser': 'cozy',
+        'cozy': 'cozy_fantasy',
+        'cozy_fantasy': 'cozy_fantasy',
+        'palateCleanser': 'cozy_fantasy',
         'fairy_tale_retellings': 'fairy_tale_retellings',
         'post_apocalyptic': 'post_apocalyptic',
         'enemies_to_lovers': 'enemies_to_lovers',
@@ -207,7 +207,8 @@ app.get('/api/books/:category', async (req, res) => {
             id: book.googleBooksId || book.isbn13 || `google-${Math.random()}`,
             title: book.title || 'Unknown Title',
             author: Array.isArray(book.authors) ? book.authors.join(', ') : (book.author || 'Unknown Author'),
-            thumbnail: book.thumbnail || book.coverUrl,
+            coverUrl: book.coverUrl || book.thumbnail || null,
+            thumbnail: book.thumbnail || book.coverUrl || null,
             synopsis: book.description || '',
             rating: book.averageRating || null,
             pages: book.pageCount || null,
@@ -788,7 +789,7 @@ app.get('/api/discovery/:genre', async (req, res) => {
 
   const validGenres = [
     'new_releases', 'hidden_gems', 'popular', 'fantasy',
-    'scifi', 'romantasy', 'cozy', 'awards', 'series_starters'
+    'scifi', 'romantasy', 'cozy_fantasy', 'awards', 'series_starters'
   ];
 
   if (!validGenres.includes(genre)) {

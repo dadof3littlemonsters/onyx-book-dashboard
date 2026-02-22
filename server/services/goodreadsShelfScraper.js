@@ -10,16 +10,16 @@ const GENRE_SOURCES = {
   fantasy: { type: 'shelf', name: 'fantasy', initialCount: 200, refreshCount: 50 },
   scifi: { type: 'shelf', name: 'science-fiction', initialCount: 200, refreshCount: 50 },
   dark_fantasy: { type: 'shelf', name: 'grimdark', initialCount: 150, refreshCount: 50 },
-  cozy: { type: 'shelf', name: 'cozy-fantasy', initialCount: 150, refreshCount: 50 },
+  cozy_fantasy: { type: 'list', id: '178058.Cozy_Fantasy_Books', initialCount: 150, refreshCount: 50 },
   action_adventure: { type: 'shelf', name: 'action-adventure', initialCount: 150, refreshCount: 50 },
   booktok_trending: { type: 'shelf', name: 'booktok', initialCount: 150, refreshCount: 50 },
   popular: { type: 'shelf', name: 'popular', initialCount: 150, refreshCount: 50 },
   new_releases: { type: 'shelf', name: 'new-releases', initialCount: 150, refreshCount: 50 },
   hidden_gems: { type: 'shelf', name: 'hidden-gems', initialCount: 150, refreshCount: 50 },
-  enemies_to_lovers: { type: 'shelf', name: 'enemies-to-lovers', initialCount: 150, refreshCount: 50 },
+  enemies_to_lovers: { type: 'list', id: '73396.Best_enemies_to_lovers', initialCount: 150, refreshCount: 50 },
   dragons: { type: 'list', id: '583.Dragons', initialCount: 150, refreshCount: 50 },
-  fairy_tale_retellings: { type: 'shelf', name: 'fairy-tale-retellings', initialCount: 150, refreshCount: 50 },
-  post_apocalyptic: { type: 'shelf', name: 'post-apocalyptic', initialCount: 150, refreshCount: 50 },
+  fairy_tale_retellings: { type: 'list', id: '96.The_Best_Fairytales_and_Retellings', initialCount: 150, refreshCount: 50 },
+  post_apocalyptic: { type: 'list', id: '47.Best_Dystopian_and_Post_Apocalyptic_Fiction', initialCount: 150, refreshCount: 50 },
 };
 
 class GoodreadsShelfScraper {
@@ -166,13 +166,16 @@ class GoodreadsShelfScraper {
         }
       });
     } else if (type === 'list') {
-      // List page parsing
-      $('tr[data-resource-type="Book"]').each((i, elem) => {
+      // List page parsing - iterate over book title links directly.
+      // Goodreads list pages do not have tr[data-resource-type="Book"] elements;
+      // instead every book exposes an a.bookTitle anchor. Walk up to the containing
+      // <tr> from there to scope the author and cover image lookups correctly.
+      $('a.bookTitle').each((i, elem) => {
         try {
-          const $elem = $(elem);
-          const $bookLink = $elem.find('a.bookTitle').first();
-          const $authorLink = $elem.find('a.authorName').first();
-          const $img = $elem.find('img').first();
+          const $bookLink = $(elem);
+          const $row = $bookLink.closest('tr');
+          const $authorLink = $row.find('a.authorName').first();
+          const $img = $row.find('img').first();
 
           const title = $bookLink.text().trim();
           const author = $authorLink.text().trim();
