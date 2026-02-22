@@ -242,13 +242,21 @@ app.get('/api/books/:category', async (req, res) => {
     // punctuation stripped, parenthetical/bracket suffixes removed).
     // When two entries collide, the one with a coverUrl is preferred.
     {
-      const normTitle = (t) =>
-        (t || '')
-          .toLowerCase()
-          .replace(/\s*[\[(][^\])\]]*[\])]\s*/g, ' ') // remove (…) and […]
-          .replace(/[^\w\s]/g, ' ')                    // strip punctuation
-          .replace(/\s+/g, ' ')
-          .trim();
+      // Aggressive title normalisation for deduplication.
+      // Uses 5 words (not 4) so books in the same series that share
+      // a common prefix ("Harry Potter and the …") don't collide.
+      const normTitle = (t) => {
+        let s = (t || '').toLowerCase();
+        s = s.replace(/\s+by\s+\S.*$/, '');                          // strip " by Author"
+        s = s.replace(/\s*\([^)]*\)\s*/g, ' ');                      // strip (…)
+        s = s.replace(/\s*\[[^\]]*\]\s*/g, ' ');                     // strip […]
+        s = s.replace(/\s*:.*$/, '');                                 // strip subtitle after ":"
+        s = s.replace(/\s+#\d+\S*/g, ' ');                           // strip "#N" series marker
+        s = s.replace(/\s+(?:book|vol\.?|volume)\s+\d+\S*/gi, ' '); // strip "Book N" / "Vol N"
+        s = s.replace(/^(?:the|a|an)\s+/, '');                       // strip leading article
+        s = s.replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        return s.split(/\s+/).slice(0, 5).join(' ');
+      };
 
       const isbnSeen  = new Map(); // isbn → index in deduped[]
       const titleSeen = new Map(); // normTitle → index in deduped[]
