@@ -184,7 +184,7 @@ app.get('/api/books/:category', async (req, res) => {
         'scifi': 'scifi',
         'sciFi': 'scifi',
         'cozy': 'cozy',
-        'cozy_fantasy': 'cozy_fantasy',
+        'cozy_fantasy': 'cozy',
         'palateCleanser': 'cozy',
         'fairy_tale_retellings': 'fairy_tale_retellings',
         'post_apocalyptic': 'post_apocalyptic',

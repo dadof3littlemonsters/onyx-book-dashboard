@@ -18,6 +18,8 @@ const GENRE_SOURCES = {
   hidden_gems: { type: 'shelf', name: 'hidden-gems', initialCount: 150, refreshCount: 50 },
   enemies_to_lovers: { type: 'shelf', name: 'enemies-to-lovers', initialCount: 150, refreshCount: 50 },
   dragons: { type: 'list', id: '583.Dragons', initialCount: 150, refreshCount: 50 },
+  fairy_tale_retellings: { type: 'shelf', name: 'fairy-tale-retellings', initialCount: 150, refreshCount: 50 },
+  post_apocalyptic: { type: 'shelf', name: 'post-apocalyptic', initialCount: 150, refreshCount: 50 },
 };
 
 class GoodreadsShelfScraper {
