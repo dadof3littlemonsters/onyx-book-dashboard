@@ -594,6 +594,88 @@ class DiscoveryCache {
     return hoursDiff >= 24;
   }
 
+  /**
+   * Refresh a single genre in the cache without touching any other genre.
+   *
+   * Uses the same scrape → enrich → validate pipeline as generateDailyCache()
+   * for a single genre, then merges the result into the existing cache file,
+   * replacing only that genre's slot.
+   *
+   * @param {string} genreKey - A key from getGenreMappings(), or 'awards'
+   * @returns {Promise<{ genre, booksAdded, totalInGenre, generatedAt }>}
+   */
+  async refreshGenre(genreKey) {
+    const isAwards = genreKey === 'awards';
+
+    // Validate the genre key
+    if (!isAwards && !this.genreMappings[genreKey]) {
+      throw new Error(
+        `Unknown genre key: "${genreKey}". Valid keys: ${Object.keys(this.genreMappings).join(', ')}, awards`
+      );
+    }
+
+    const startTime = Date.now();
+    console.log(`[DiscoveryCache] refreshGenre: starting refresh for "${genreKey}"`);
+
+    await this.ensureDataDirectory();
+
+    // Load existing cache from file if not already in memory
+    let cache = this.cache;
+    if (!cache) {
+      cache = await this.loadCacheFromFile();
+    }
+    // If no cache file exists yet, start with a fresh structure rather than failing
+    if (!cache) {
+      cache = {
+        generatedAt: new Date().toISOString(),
+        genres: {}
+      };
+      console.log(`[DiscoveryCache] refreshGenre: no existing cache found, creating new structure`);
+    }
+
+    // Initialize master cache (no-op if already loaded)
+    await masterBookCache.init();
+
+    // Build the config the same way generateDailyCache() does for each entry
+    const config = isAwards
+      ? { isbns: this.awardsIsbns }
+      : { isInitialPopulation: false };
+
+    // Use the same single-genre path that generateDailyCache() drives via processGenresInParallel()
+    const result = await this.processGenre(genreKey, config);
+
+    if (!result.success) {
+      throw new Error(`Genre refresh failed for "${genreKey}": ${result.error}`);
+    }
+
+    // Merge: replace only this genre's slot, leave all others untouched
+    const previousCount = Array.isArray(cache.genres[genreKey])
+      ? cache.genres[genreKey].length
+      : 0;
+    cache.genres[genreKey] = result.books;
+    cache.lastRefreshedGenre = genreKey;
+    cache.lastRefreshedAt = new Date().toISOString();
+
+    // Persist and update in-memory state
+    await this.saveCacheToFile(cache);
+    this.cache = cache;
+    this.lastGenerated = new Date();
+
+    const booksAdded = result.books.length;
+    const elapsed = Date.now() - startTime;
+    console.log(
+      `[DiscoveryCache] refreshGenre: "${genreKey}" complete in ${elapsed}ms` +
+      ` — ${booksAdded} books now in genre (was ${previousCount})`
+    );
+
+    return {
+      genre: genreKey,
+      booksAdded,
+      totalInGenre: booksAdded,
+      generatedAt: cache.lastRefreshedAt
+    };
+  }
+
   clearCache() {
     this.cache = null;
     this.lastGenerated = null;

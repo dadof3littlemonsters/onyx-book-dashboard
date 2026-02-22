@@ -195,9 +195,7 @@ app.get('/api/books/:category', async (req, res) => {
         'booktok_trending': 'booktok_trending',
         'action_adventure': 'action_adventure',
         'dark_fantasy': 'dark_fantasy',
-        'dragons': 'dragons',
-        'bestSellers': 'best_sellers',
-        'best_sellers': 'best_sellers'
+        'dragons': 'dragons'
       };
 
       const discoveryGenre = discoveryGenreMap[category];
@@ -512,6 +510,34 @@ app.post('/api/admin/cache/nuke', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to nuke caches: ' + error.message
+    });
+  }
+});
+
+// Per-genre refresh endpoint - tops up a single genre without touching the rest of the cache
+app.post('/api/admin/cache/refresh-genre', requireAdmin, async (req, res) => {
+  const { genre } = req.body;
+
+  if (!genre) {
+    return res.status(400).json({
+      success: false,
+      message: 'Request body must include a "genre" field'
+    });
+  }
+
+  console.log(`[Admin] cache/refresh-genre requested: genre="${genre}"`);
+
+  try {
+    const result = await discoveryCache.refreshGenre(genre);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    if (error.message.startsWith('Unknown genre key')) {
+      return res.status(400).json({ success: false, message: error.message });
+    }
+    console.error(`[Admin] cache/refresh-genre failed for "${genre}":`, error.message);
+    res.status(500).json({
+      success: false,
+      message: `Failed to refresh genre "${genre}": ${error.message}`
     });
   }
 });
