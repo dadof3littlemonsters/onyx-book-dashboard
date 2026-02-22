@@ -28,12 +28,17 @@ services:
       - TELEGRAM_API_ID=${TELEGRAM_API_ID}
       - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
       - ZLIBRARY_BOT_USERNAME=${ZLIBRARY_BOT_USERNAME}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
     volumes:
       - ./data:/app/data
-      - /mnt/books/audiobooks:/app/media/audiobooks:ro
+      # Audiobook library (read-only for web UI)
+      - /mnt/books/Media/Audiobooks:/app/media/audiobooks:ro
+      # Ebook library (read-only for web UI)
       - /mnt/books/ebooks:/app/media/ebooks:ro
+      # Downloads directory for qBittorrent
       - /mnt/unionfs/downloads:/downloads
-      - /mnt/books/audiobooks:/mnt/books/audiobooks
+      # Write paths for process-download.js (must be writable)
+      - /mnt/unionfs/Media/Audiobooks:/mnt/unionfs/Media/Audiobooks
       - /mnt/books/ebooks:/mnt/books/ebooks
     networks:
       - saltbox

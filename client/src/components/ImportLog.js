@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FileCheck, AlertCircle, HardDrive, Trash2, Home } from 'lucide-react';
+import { FileCheck, AlertCircle, HardDrive, Trash2, Home, Shield, Database } from 'lucide-react';
 import toast from 'react-hot-toast';
 import Header from './Header';
 import './AdminPanel.css';
@@ -105,6 +105,20 @@ const ImportLog = () => {
             />
 
             <main className="admin-main">
+                <div className="admin-nav">
+                    <a href="/admin" className="nav-tab">
+                        <Shield size={18} />
+                        Requests
+                    </a>
+                    <a href="/admin/imports" className="nav-tab active">
+                        <img src="/import-log-icon.png" alt="" style={{ height: '18px', width: 'auto' }} />
+                        Import Log
+                    </a>
+                    <a href="/admin/cache" className="nav-tab">
+                        <Database size={18} />
+                        Cache
+                    </a>
+                </div>
                 <div className="import-log-container">
                     <div className="import-log-header">
                         <h2>Import Log</h2>

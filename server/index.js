@@ -17,6 +17,9 @@ const TimeoutHandler = require('./utils/timeout');
 const googleBooksApi = require('./services/googleBooksApi');
 const coverResolver = require('./services/coverResolver');
 const discoveryCache = require('./services/discoveryCache');
+// const aiBookCurator = require('./services/aiBookCurator'); // Temporarily disabled - file deleted
+const cacheCleaner = require('./utils/cacheCleaner');
+const masterBookCache = require('./services/masterBookCache');
 const { mockBooks } = require('./mockData');
 const telegramService = require('./services/telegram');
 const directDownloadService = require('./services/directDownload');
@@ -181,15 +184,20 @@ app.get('/api/books/:category', async (req, res) => {
         'scifi': 'scifi',
         'sciFi': 'scifi',
         'cozy': 'cozy',
+        'cozy_fantasy': 'cozy_fantasy',
         'palateCleanser': 'cozy',
+        'fairy_tale_retellings': 'fairy_tale_retellings',
+        'post_apocalyptic': 'post_apocalyptic',
+        'enemies_to_lovers': 'enemies_to_lovers',
         'popular': 'popular',
         'hidden_gems': 'hidden_gems',
         'new_releases': 'new_releases',
         'booktok_trending': 'booktok_trending',
         'action_adventure': 'action_adventure',
         'dark_fantasy': 'dark_fantasy',
-        'enemies_to_lovers': 'enemies_to_lovers',
-        'dragons': 'dragons'
+        'dragons': 'dragons',
+        'bestSellers': 'best_sellers',
+        'best_sellers': 'best_sellers'
       };
 
       const discoveryGenre = discoveryGenreMap[category];
@@ -443,6 +451,27 @@ app.post('/api/admin/discovery/generate-cache', requireAdmin, async (req, res) =
   }
 });
 
+// Initial population endpoint - forces full cache generation
+app.post('/api/admin/discovery/initial-population', requireAdmin, async (req, res) => {
+  try {
+    console.log('[ADMIN] Starting initial population with full book counts...');
+    const cache = await discoveryCache.generateDailyCache(true); // Force initial population
+
+    res.json({
+      success: true,
+      message: 'Initial population completed successfully',
+      generatedAt: cache.generatedAt,
+      stats: discoveryCache.getCacheStats()
+    });
+  } catch (error) {
+    console.error('[ADMIN] Initial population error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 app.post('/api/admin/discovery/clear-cache', requireAdmin, async (req, res) => {
   try {
     discoveryCache.clearCache();
@@ -457,6 +486,271 @@ app.post('/api/admin/discovery/clear-cache', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to clear discovery cache: ' + error.message
+    });
+  }
+});
+
+// Nuke endpoint - wipes both discovery and master caches for a clean-slate reset
+app.post('/api/admin/cache/nuke', requireAdmin, async (req, res) => {
+  try {
+    await masterBookCache.init();
+
+    // Clear in-memory state and delete files for both caches
+    discoveryCache.clearCache();
+    await discoveryCache.deleteCacheFile();
+    await masterBookCache.clear();
+
+    console.log('[Admin] Cache nuke complete: discovery_cache.json and master_book_cache.json wiped');
+
+    res.json({
+      success: true,
+      message: 'Both caches have been wiped. Trigger /api/admin/discovery/generate-cache to rebuild.',
+      cleared: ['discovery_cache.json', 'master_book_cache.json']
+    });
+  } catch (error) {
+    console.error('Error nuking caches:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to nuke caches: ' + error.message
+    });
+  }
+});
+
+// Cache validation endpoint - audits cache without modifying
+app.get('/api/admin/discovery/validate', requireAdmin, async (req, res) => {
+  try {
+    const result = await cacheCleaner.validateCacheIntegrity();
+
+    if (!result.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to validate cache: ' + result.error
+      });
+    }
+
+    res.json({
+      success: true,
+      report: result.report
+    });
+  } catch (error) {
+    console.error('Error validating discovery cache:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to validate cache: ' + error.message
+    });
+  }
+});
+
+// Cache health check - quick summary
+app.get('/api/admin/discovery/health', requireAdmin, async (req, res) => {
+  try {
+    const result = await cacheCleaner.getCacheHealth();
+
+    if (!result.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to get cache health: ' + result.error
+      });
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error getting cache health:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get cache health: ' + error.message
+    });
+  }
+});
+
+// Cache cleaning endpoint - removes invalid books from existing cache
+app.post('/api/admin/discovery/clean', requireAdmin, async (req, res) => {
+  try {
+    const result = await cacheCleaner.cleanExistingCache();
+
+    if (!result.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to clean cache: ' + result.error
+      });
+    }
+
+    // Clear in-memory cache so it gets reloaded with cleaned data
+    discoveryCache.clearCache();
+
+    res.json({
+      success: true,
+      message: result.message,
+      stats: result.stats
+    });
+  } catch (error) {
+    console.error('Error cleaning discovery cache:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to clean cache: ' + error.message
+    });
+  }
+});
+
+// Per-genre cache regeneration endpoint
+app.post('/api/admin/discovery/regenerate-genre', requireAdmin, async (req, res) => {
+  try {
+    const { genre } = req.body;
+
+    if (!genre) {
+      return res.status(400).json({
+        success: false,
+        message: 'Genre is required'
+      });
+    }
+
+    console.log(`[ADMIN] Regenerating cache for genre: ${genre}`);
+
+    // Get the genre mapping
+    const genreMapping = discoveryCache.genreMappings[genre];
+    if (!genreMapping) {
+      return res.status(404).json({
+        success: false,
+        message: `Unknown genre: ${genre}`
+      });
+    }
+
+    let books = [];
+    if (genreMapping.aiPrompt) {
+      console.log(`[ADMIN] Using AI curation for ${genre}`);
+      // books = await aiBookCurator.generateAndEnrich(genreMapping.aiPrompt);
+      return res.status(503).json({
+        success: false,
+        message: `AI curation temporarily disabled - use initial population endpoint instead`
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: `Genre ${genre} does not have AI curation configured`
+      });
+    }
+
+    // Load existing cache from disk first to preserve other genres
+    if (!discoveryCache.cache) {
+      await discoveryCache.loadCacheFromFile();
+    }
+
+    // Initialize cache structure if needed
+    if (!discoveryCache.cache) {
+      discoveryCache.cache = { generatedAt: new Date().toISOString(), genres: {} };
+    }
+    if (!discoveryCache.cache.genres) {
+      discoveryCache.cache.genres = {};
+    }
+
+    // Update only this genre
+    discoveryCache.cache.genres[genre] = books.slice(0, 40);
+
+    // Save updated cache to file
+    await discoveryCache.saveCacheToFile(discoveryCache.cache);
+    discoveryCache.lastGenerated = new Date();
+
+    console.log(`[ADMIN] Genre ${genre} regenerated with ${books.length} books`);
+
+    res.json({
+      success: true,
+      message: `Genre "${genre}" regenerated successfully`,
+      genre,
+      bookCount: books.length,
+      generatedAt: discoveryCache.cache.generatedAt
+    });
+  } catch (error) {
+    console.error('Error regenerating genre cache:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to regenerate genre: ' + error.message
+    });
+  }
+});
+
+// Get detailed cache stats per genre
+app.get('/api/admin/discovery/genre-stats', requireAdmin, async (req, res) => {
+  try {
+    const stats = discoveryCache.getCacheStats();
+
+    // Add schedule information for each genre
+    const genreSchedules = {
+      best_sellers: { schedule: 'weekly', description: 'Sundays' },
+      booktok_trending: { schedule: 'weekly', description: 'Sundays' },
+      popular: { schedule: 'weekly', description: 'Sundays' },
+      new_releases: { schedule: 'weekly', description: 'Sundays' },
+      hidden_gems: { schedule: 'monthly', description: '1st of month' },
+      romantasy: { schedule: 'quarterly', description: 'Jan 1, Apr 1, Jul 1, Oct 1' },
+      fantasy: { schedule: 'quarterly', description: 'Jan 1, Apr 1, Jul 1, Oct 1' },
+      action_adventure: { schedule: 'quarterly', description: 'Jan 1, Apr 1, Jul 1, Oct 1' },
+      scifi: { schedule: 'quarterly', description: 'Jan 1, Apr 1, Jul 1, Oct 1' },
+      dark_fantasy: { schedule: 'quarterly', description: 'Jan 1, Apr 1, Jul 1, Oct 1' },
+      dragons: { schedule: 'quarterly', description: 'Jan 1, Apr 1, Jul 1, Oct 1' }
+    };
+
+    const detailedStats = {
+      hasCache: stats.hasCache,
+      generatedAt: stats.generatedAt,
+      genres: {}
+    };
+
+    if (stats.genres) {
+      for (const [genreKey, genreStats] of Object.entries(stats.genres)) {
+        detailedStats.genres[genreKey] = {
+          ...genreStats,
+          schedule: genreSchedules[genreKey]?.schedule || 'unknown',
+          scheduleDescription: genreSchedules[genreKey]?.description || 'N/A'
+        };
+      }
+    }
+
+    // Include all configured genres even if not yet cached
+    for (const [genreKey, schedule] of Object.entries(genreSchedules)) {
+      if (!detailedStats.genres[genreKey]) {
+        detailedStats.genres[genreKey] = {
+          bookCount: 0,
+          hasCovers: 0,
+          cached: false,
+          schedule: schedule.schedule,
+          scheduleDescription: schedule.description
+        };
+      }
+    }
+
+    res.json(detailedStats);
+  } catch (error) {
+    console.error('Error getting genre stats:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get genre stats: ' + error.message
+    });
+  }
+});
+
+// Cache regeneration endpoint - clears and regenerates with strict filtering
+app.post('/api/admin/discovery/regenerate', requireAdmin, async (req, res) => {
+  try {
+    console.log('[ADMIN] Starting cache regeneration with strict filtering...');
+
+    // First, clear existing cache
+    discoveryCache.clearCache();
+    await discoveryCache.deleteCacheFile();
+    console.log('[ADMIN] Old cache cleared');
+
+    // Generate new cache (will use bookValidator filtering)
+    const cache = await discoveryCache.generateDailyCache();
+
+    res.json({
+      success: true,
+      message: 'Discovery cache regenerated successfully with strict filtering',
+      generatedAt: cache.generatedAt,
+      stats: discoveryCache.getCacheStats()
+    });
+  } catch (error) {
+    console.error('Error regenerating discovery cache:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to regenerate cache: ' + error.message
     });
   }
 });
@@ -939,12 +1233,31 @@ app.get('/api/proxy-image', async (req, res) => {
     res.set({
       'Content-Type': response.headers['content-type'] || 'image/jpeg',
       'Cache-Control': 'public, max-age=86400', // Cache for 24 hours
-      'Access-Control-Allow-Origin': '*',
-      'Content-Length': response.headers['content-length']
+      'Access-Control-Allow-Origin': '*'
     });
 
-    // Pipe the image data directly to the client
+    // Pipe with proper error handling
     response.data.pipe(res);
+
+    // Handle stream errors - prevent 500 errors
+    response.data.on('error', (err) => {
+      console.error(`[IMAGE-PROXY] Stream error for ${url}:`, err.message);
+      if (!res.headersSent) {
+        res.end();
+      }
+    });
+
+    // Handle upstream closing connection
+    response.data.on('close', () => {
+      console.log(`[IMAGE-PROXY] Stream closed for ${url}`);
+    });
+
+    // Handle response finish
+    res.on('close', () => {
+      if (!res.writableEnded) {
+        response.data.destroy();
+      }
+    });
 
     console.log(`[IMAGE-PROXY] Successfully proxied image: ${response.status} ${response.headers['content-type']}`);
 

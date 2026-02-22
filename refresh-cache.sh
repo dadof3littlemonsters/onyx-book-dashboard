@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Refresh script for Onyx AI book curation cache
+# Refresh script for Onyx Goodreads-based book curation cache
 # Determines which genres to refresh based on schedule and calls admin API
 
 set -e
@@ -23,9 +23,15 @@ MAX_RETRIES=3
 RETRY_DELAY=10
 DEBUG="${DEBUG:-false}"
 
-# Genre schedules
-WEEKLY_GENRES=("booktok_trending" "popular" "new_releases" "hidden_gems" "enemies_to_lovers")
-MONTHLY_GENRES=("romantasy" "fantasy" "action_adventure" "scifi" "dark_fantasy" "dragons")
+# Genre schedules - updated for new Goodreads-based scraper
+# Weekly: Fast-moving genres that benefit from fresh content
+WEEKLY_GENRES=("romantasy" "cozy_fantasy" "fairy_tale_retellings" "enemies_to_lovers")
+
+# Monthly: Slower-moving genres
+MONTHLY_GENRES=()
+
+# Quarterly: Large, stable genres that don't change often
+QUARTERLY_GENRES=("fantasy" "scifi" "dark_fantasy" "dragons" "action_adventure" "post_apocalyptic")
 
 # Logging function
 log() {
@@ -76,26 +82,26 @@ refresh_genre() {
 wait_for_container() {
     local max_wait=60
     local elapsed=0
-    
+
     log "Waiting for Onyx container to be ready..."
-    
+
     while [ $elapsed -lt $max_wait ]; do
         # Check if container is running
         if ! docker ps | grep -q "onyx"; then
             log_error "Container is not running"
             return 1
         fi
-        
+
         # Check if API is responding via localhost
         if curl -s -f -m 5 "http://localhost:3000/api/books/fantasy?useDynamic=true" > /dev/null 2>&1; then
             log "Container is ready and API is responding"
             return 0
         fi
-        
+
         sleep 2
         elapsed=$((elapsed + 2))
     done
-    
+
     log_error "Container did not become ready within ${max_wait}s"
     return 1
 }
@@ -137,11 +143,12 @@ refresh_all() {
 determine_genres_to_refresh() {
     local day_of_week=$(date '+%u')  # 1=Monday, 7=Sunday
     local day_of_month=$(date '+%d') # 01-31
+    local month=$(date '+%m')        # 01-12
 
     # DEBUG mode: return all genres
     if [ "$DEBUG" = "true" ]; then
         log "DEBUG mode enabled - returning all genres"
-        echo "${WEEKLY_GENRES[@]} ${MONTHLY_GENRES[@]}"
+        echo "${WEEKLY_GENRES[@]} ${MONTHLY_GENRES[@]} ${QUARTERLY_GENRES[@]}"
         return 0
     fi
 
@@ -159,9 +166,19 @@ determine_genres_to_refresh() {
         genres_to_refresh+=("${MONTHLY_GENRES[@]}")
     fi
 
+    # Quarterly refresh: Jan 1, Apr 1, Jul 1, Oct 1
+    if [ "$day_of_month" = "01" ]; then
+        case "$month" in
+            01|04|07|10)
+                log "Quarterly refresh scheduled (quarter start: month $month)"
+                genres_to_refresh+=("${QUARTERLY_GENRES[@]}")
+                ;;
+        esac
+    fi
+
     # If no scheduled refresh today, log and return empty list
     if [ ${#genres_to_refresh[@]} -eq 0 ]; then
-        log "No scheduled refresh for today (day of week: $day_of_week, day of month: $day_of_month)"
+        log "No scheduled refresh for today (day of week: $day_of_week, day of month: $day_of_month, month: $month)"
     fi
 
     # Remove duplicates (in case of overlap)

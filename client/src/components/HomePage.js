@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { Search, User, LogOut, Menu, Settings } from 'lucide-react';
 import toast from 'react-hot-toast';
 import BookRow from './BookRow';
 import BookDrawer from './BookDrawer';
@@ -149,10 +148,6 @@ const HomePage = () => {
     }
   };
 
-  const handleChangeUser = () => {
-    setIsUserSelectorOpen(true);
-  };
-
   const handleLogout = () => {
     localStorage.removeItem('onyx-selected-user');
     localStorage.removeItem('onyx-has-visited');
@@ -196,16 +191,13 @@ const HomePage = () => {
   const categories = [
     { name: 'Romantasy', key: 'romantasy' },
     { name: 'Fantasy & High Fantasy', key: 'fantasy' },
-    { name: 'BookTok Trending', key: 'booktok_trending' },
-    { name: 'Popular Right Now', key: 'popular' },
-    { name: 'New This Month', key: 'new_releases' },
-    { name: 'Hidden Gems', key: 'hidden_gems' },
-    { name: 'Action & Adventure', key: 'action_adventure' },
-    { name: 'Science Fiction', key: 'scifi' },
     { name: 'Dark Fantasy', key: 'dark_fantasy' },
+    { name: 'Cozy Fantasy', key: 'cozy_fantasy' },
+    { name: 'Fairy Tale Retellings', key: 'fairy_tale_retellings' },
+    { name: 'Science Fiction', key: 'scifi' },
+    { name: 'Post-Apocalyptic', key: 'post_apocalyptic' },
     { name: 'Enemies to Lovers', key: 'enemies_to_lovers' },
-    { name: 'Dragons & Magic', key: 'dragons' },
-    { name: 'Coming Soon: Personalized recommendations based on your requests', key: 'personalized' }
+    { name: 'Action & Adventure', key: 'action_adventure' }
   ];
 
   return (
@@ -250,16 +242,10 @@ const HomePage = () => {
                   {category.name}
                   <span className="view-all-link">View All →</span>
                 </h2>
-                {category.key === 'personalized' ? (
-                  <div className="personalized-placeholder">
-                    <p>Coming Soon: Personalized recommendations based on your requests</p>
-                  </div>
-                ) : (
-                  <BookRow
-                    category={category.key}
-                    onBookSelect={handleBookSelect}
-                  />
-                )}
+                <BookRow
+                  category={category.key}
+                  onBookSelect={handleBookSelect}
+                />
               </div>
             ))}
           </div>

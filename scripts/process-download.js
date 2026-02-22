@@ -14,7 +14,7 @@ const EBOOK_EXTENSIONS = ['.epub', '.mobi', '.azw3', '.pdf', '.cbz', '.cbr'];
 const SKIP_EXTENSIONS = ['.nfo', '.txt', '.torrent', '.url', '.sfv', '.md5', '.xml'];
 const KEEP_IMAGES = ['cover.jpg', 'cover.png', 'folder.jpg', 'folder.png'];
 
-const AUDIOBOOK_DEST = '/mnt/books/audiobooks';
+const AUDIOBOOK_DEST = '/mnt/unionfs/Media/Audiobooks';
 const EBOOK_DEST = '/mnt/books/ebooks';
 const LOG_FILE = '/app/data/import_log.json';
 
@@ -27,6 +27,37 @@ function isMAM(trackerUrl) {
 function parseTorrentName(name) {
     // Remove file extension if present
     let cleanName = name.replace(/\.[^.]+$/, '');
+
+    // Pattern 0: Z-Library format "Title (Author, First...) (Z-Library)"
+    const zlibMatch = cleanName.match(/^(.+?)\s*\(([^)]+)\)\s*\(Z-Library\)/i);
+    if (zlibMatch) {
+        let title = zlibMatch[1].trim();
+        let authorPart = zlibMatch[2].trim().replace(/\.\.\.$/, '');
+        // Handle "Last, First" format -> "First Last"
+        if (authorPart.includes(',')) {
+            const parts = authorPart.split(',').map(p => p.trim());
+            if (parts.length >= 2 && parts[0] && parts[1]) {
+                authorPart = `${parts[1]} ${parts[0]}`;
+            }
+        }
+        console.log(`[PARSER] Z-Library: Title="${title}" Author="${authorPart}"`);
+        return { title, author: authorPart, series: null };
+    }
+
+    // Pattern 0b: "(Author Name)" before cleaning
+    const parenMatch = cleanName.match(/^(.+?)\s*\(([A-Z][a-z]+[,\s]+[A-Z][^)]*)\)/);
+    if (parenMatch) {
+        let title = parenMatch[1].trim();
+        let authorPart = parenMatch[2].trim().replace(/\.\.\.$/, '');
+        if (authorPart.includes(',')) {
+            const parts = authorPart.split(',').map(p => p.trim());
+            if (parts.length >= 2 && parts[0] && parts[1]) {
+                authorPart = `${parts[1]} ${parts[0]}`;
+            }
+        }
+        console.log(`[PARSER] Parenthetical author: Title="${title}" Author="${authorPart}"`);
+        return { title, author: authorPart, series: null };
+    }
 
     // Remove common suffixes like (Unabridged), [MP3], {2020}, etc.
     cleanName = cleanName.replace(/\s*[\[\({\<][^\]\)}\>]*[\]\)}\>]\s*/g, ' ').trim();
@@ -98,9 +129,20 @@ function shouldProcessFile(filename) {
     return false;
 }
 
-// Determine media type
-function getMediaType(filename) {
-    const ext = path.extname(filename).toLowerCase();
+// Determine media type (recursively check directories)
+function getMediaType(filepath) {
+    const stat = fs.statSync(filepath);
+
+    if (stat.isDirectory()) {
+        const items = fs.readdirSync(filepath);
+        for (const item of items) {
+            const result = getMediaType(path.join(filepath, item));
+            if (result !== 'unknown') return result;
+        }
+        return 'unknown';
+    }
+
+    const ext = path.extname(filepath).toLowerCase();
     if (AUDIOBOOK_EXTENSIONS.includes(ext)) return 'audiobook';
     if (EBOOK_EXTENSIONS.includes(ext)) return 'ebook';
     return 'unknown';
@@ -110,6 +152,18 @@ function getMediaType(filename) {
 function ensureDir(dirPath) {
     if (!fs.existsSync(dirPath)) {
         fs.mkdirSync(dirPath, { recursive: true });
+    }
+}
+
+// Set correct ownership for Audiobookshelf (uid/gid 1000)
+function setCorrectOwnership(filePath) {
+    try {
+        // Audiobookshelf runs as uid/gid 1000 (node user in container, seed on host)
+        fs.chownSync(filePath, 1000, 1000);
+        console.log(`[CHOWN] Set ownership to 1000:1000 for ${filePath}`);
+    } catch (error) {
+        // Non-fatal error - log but continue
+        console.log(`[WARN] Could not set ownership for ${filePath}: ${error.message}`);
     }
 }
 
@@ -153,6 +207,11 @@ function processFile(sourcePath, destPath, useHardlink) {
                 }
             }
         }
+
+        // Set correct ownership for Audiobookshelf to write covers
+        setCorrectOwnership(destPath);
+        // Also set ownership on parent directory
+        setCorrectOwnership(path.dirname(destPath));
 
         return { success: true, skipped: false };
     } catch (error) {
@@ -206,9 +265,9 @@ function processDirectory(sourceDir, destDir, useHardlink) {
 }
 
 // Trigger Audiobookshelf library scan
-async function triggerLibraryScan() {
+async function triggerLibraryScan(mediaType = 'audiobook') {
     try {
-        const absUrl = process.env.ABS_URL || 'http://audiobookshelf:13378';
+        const absUrl = process.env.ABS_URL || 'http://audiobookshelf:80';
         const absToken = process.env.ABS_API_KEY;
 
         if (!absToken) {
@@ -216,21 +275,71 @@ async function triggerLibraryScan() {
             return false;
         }
 
-        const response = await axios.post(
-            `${absUrl}/api/libraries/scan`,
-            {},
+        // 1. Get libraries
+        const libsResponse = await axios.get(`${absUrl}/api/libraries`, {
+            headers: { 'Authorization': `Bearer ${absToken}` },
+            timeout: 5000
+        });
+
+        // Handle both array and wrapped object responses
+        const libraries = Array.isArray(libsResponse.data)
+            ? libsResponse.data
+            : (libsResponse.data.libraries || []);
+
+        if (libraries.length === 0) {
+            console.error('[ERROR] No libraries found in Audiobookshelf');
+            return false;
+        }
+
+        // 2. Find appropriate library based on media type
+        let targetLib;
+        if (mediaType === 'audiobook') {
+            // Look for audiobook library by name or mediaType
+            targetLib = libraries.find(l =>
+                l.name === 'Audio Books' ||
+                l.name === 'Audiobooks' ||
+                l.mediaType === 'book'
+            ) || libraries[0];
+        } else if (mediaType === 'ebook') {
+            // Look for ebook library by name or mediaType
+            targetLib = libraries.find(l =>
+                l.name === 'Ebooks' ||
+                l.name === 'E-Books' ||
+                l.name === 'Books' ||
+                l.mediaType === 'book'
+            );
+
+            // If no ebook library found, don't scan (ebooks might be managed by Calibre)
+            if (!targetLib) {
+                console.log('[INFO] No ebook library found in Audiobookshelf, skipping scan');
+                return false;
+            }
+        }
+
+        if (!targetLib) {
+            console.error(`[ERROR] No suitable library found for ${mediaType}`);
+            return false;
+        }
+
+        console.log(`[INFO] Found Audiobookshelf library: ${targetLib.name} (${targetLib.id}) for ${mediaType}`);
+
+        // 3. Trigger scan for this library
+        await axios.post(
+            `${absUrl}/api/libraries/${targetLib.id}/scan`,
+            { force: true },
             {
-                headers: {
-                    'Authorization': `Bearer ${absToken}`
-                },
+                headers: { 'Authorization': `Bearer ${absToken}` },
                 timeout: 5000
             }
         );
 
-        console.log('[SUCCESS] Triggered Audiobookshelf library scan');
+        console.log(`[SUCCESS] Triggered scan for library "${targetLib.name}"`);
         return true;
     } catch (error) {
         console.error(`[ERROR] Failed to trigger library scan: ${error.message}`);
+        if (error.response) {
+            console.error(`[ERROR] Response: ${error.response.status} ${JSON.stringify(error.response.data)}`);
+        }
         return false;
     }
 }
@@ -284,17 +393,8 @@ async function main() {
     const stat = fs.statSync(contentPath);
     const isDirectory = stat.isDirectory();
 
-    // Determine media type from first file
-    let mediaType = 'unknown';
-    if (isDirectory) {
-        const files = fs.readdirSync(contentPath);
-        for (const file of files) {
-            mediaType = getMediaType(file);
-            if (mediaType !== 'unknown') break;
-        }
-    } else {
-        mediaType = getMediaType(contentPath);
-    }
+    // Determine media type (getMediaType handles directories recursively)
+    const mediaType = getMediaType(contentPath);
 
     console.log(`[INFO] Media type: ${mediaType}`);
 
@@ -353,10 +453,10 @@ async function main() {
 
     console.log(`[SUMMARY] Processed: ${results.processed}, Skipped: ${results.skipped}, Errors: ${results.errors.length}`);
 
-    // Trigger library scan if successful
+    // Trigger library scan if successful (for both audiobooks and ebooks)
     let scanTriggered = false;
-    if (results.processed > 0 && mediaType === 'audiobook') {
-        scanTriggered = await triggerLibraryScan();
+    if (results.processed > 0 && (mediaType === 'audiobook' || mediaType === 'ebook')) {
+        scanTriggered = await triggerLibraryScan(mediaType);
     }
 
     // Log the import

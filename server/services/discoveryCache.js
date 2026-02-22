@@ -2,8 +2,49 @@ const fs = require('fs').promises;
 const path = require('path');
 const googleBooksApi = require('./googleBooksApi');
 const coverResolver = require('./coverResolver');
-const aiBookCurator = require('./aiBookCurator');
 const hardcoverService = require('./hardcoverService');
+const goodreadsShelfScraper = require('./goodreadsShelfScraper');
+const masterBookCache = require('./masterBookCache');
+const { validateBook } = require('../utils/bookValidator');
+
+/**
+ * Get genre sources configuration from the scraper
+ */
+function getGenreMappings() {
+  return goodreadsShelfScraper.getGenreSources();
+}
+
+/**
+ * Awards ISBNs - static list of award-winning books
+ */
+function getAwardsIsbns() {
+  return [
+    '9780765311788',  // The Name of the Wind (Hugo nominee)
+    '9780765326355',  // The Way of Kings (Hugo nominee)
+    '9780316042676',  // The Hunger Games
+    '9780441013593',  // Dune (Hugo winner)
+    '9780553382563',  // A Game of Thrones (Hugo nominee)
+    '9780060853984',  // American Gods (Hugo winner)
+    '9780316043918',  // The Windup Girl (Hugo winner)
+    '9780765316882',  // Mistborn: The Final Empire
+    '9780441005666',  // Ender's Game (Hugo winner)
+    '9780345476882',  // The Curse of Chalion (Hugo nominee)
+    '9780553803709',  // The City & The City (Hugo winner)
+    '9780316068041',  // Ancillary Justice (Hugo winner)
+    '9780765328663',  // Leviathan Wakes (Hugo nominee)
+    '9781250312995',  // The Fifth Season (Hugo winner)
+    '9781250765921',  // A Memory Called Empire (Hugo winner)
+    '9780765377068',  // The Three-Body Problem (Hugo winner)
+    '9781250303566',  // Gideon the Ninth (Hugo nominee)
+    '9781250766607',  // Network Effect (Hugo winner)
+    '9781250768359',  // A Desolation Called Peace (Hugo winner)
+    '9780765375866',  // The Calculating Stars (Hugo winner)
+    '9781250166901',  // The Stone Sky (Hugo winner)
+    '9780765375620',  // All Systems Red (Hugo winner)
+    '9780765397530',  // Binti (Hugo winner)
+    '9780765377075'   // The Dark Forest (Hugo nominee)
+  ];
+}
 
 class DiscoveryCache {
   constructor() {
@@ -12,198 +53,284 @@ class DiscoveryCache {
     this.cache = null;
     this.lastGenerated = null;
     this.isGenerating = false;
-    this.genreMappings = this.getGenreMappings();
-    this.awardsIsbns = this.getAwardsIsbns();
+    this.genreMappings = getGenreMappings();
+    this.awardsIsbns = getAwardsIsbns();
   }
 
   sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  getGenreMappings() {
-    return {
-      romantasy: {
-        aiPrompt: aiBookCurator.GENRE_PROMPTS.romantasy
-      },
-      fantasy: {
-        aiPrompt: aiBookCurator.GENRE_PROMPTS.fantasy
-      },
-      booktok_trending: {
-        aiPrompt: aiBookCurator.GENRE_PROMPTS.booktok_trending
-      },
-      popular: {
-        aiPrompt: aiBookCurator.GENRE_PROMPTS.popular
-      },
-      new_releases: {
-        aiPrompt: aiBookCurator.GENRE_PROMPTS.new_releases
-      },
-      hidden_gems: {
-        aiPrompt: aiBookCurator.GENRE_PROMPTS.hidden_gems
-      },
-      action_adventure: {
-        aiPrompt: aiBookCurator.GENRE_PROMPTS.action_adventure
-      },
-      scifi: {
-        aiPrompt: aiBookCurator.GENRE_PROMPTS.scifi
-      },
-      dark_fantasy: {
-        aiPrompt: aiBookCurator.GENRE_PROMPTS.dark_fantasy
-      },
-      enemies_to_lovers: {
-        aiPrompt: aiBookCurator.GENRE_PROMPTS.enemies_to_lovers
-      },
-      dragons: {
-        aiPrompt: aiBookCurator.GENRE_PROMPTS.dragons
+  /**
+   * Enrich a list of scraped books with Google Books metadata
+   * @param {Array} scrapedBooks - Array of {title, author, goodreadsCoverUrl}
+   * @returns {Promise<Array>} Array of enriched book objects
+   */
+  async enrichWithGoogleBooks(scrapedBooks) {
+    const enrichedBooks = [];
+    let foundCount = 0;
+    let notFoundCount = 0;
+    let droppedValidation = 0;
+    let droppedNoCover = 0;
+
+    for (let i = 0; i < scrapedBooks.length; i++) {
+      const scrapedBook = scrapedBooks[i];
+      const { title, author, goodreadsCoverUrl } = scrapedBook;
+
+      try {
+        // Try multiple search queries
+        const queries = [
+          `intitle:"${title}"+inauthor:"${author}"`,
+          `"${title}"+${author}`,
+          `${title}+${author}`
+        ];
+
+        let googleBook = null;
+
+        for (const query of queries) {
+          const results = await googleBooksApi.searchBooks(query, 5);
+          if (results.length > 0) {
+            // Find best match by comparing title and author similarity
+            const bestMatch = results.find(b =>
+              b.title && b.title.toLowerCase().includes(title.toLowerCase()) &&
+              b.authors && b.authors.some(a => a.toLowerCase().includes(author.toLowerCase()))
+            ) || results[0];
+
+            googleBook = bestMatch;
+            break;
+          }
+        }
+
+        if (googleBook) {
+          // Start with Google Books data
+          const enrichedBook = {
+            ...googleBook,
+            goodreadsCoverUrl
+          };
+
+          // Try to get better cover from coverResolver
+          const resolvedAuthor = Array.isArray(googleBook.authors) ? googleBook.authors[0] : author;
+          const betterCover = await coverResolver.getCoverUrl(
+            googleBook.isbn13,
+            googleBook.thumbnail,
+            googleBook.title,
+            resolvedAuthor
+          );
+
+          // Use better cover if available, otherwise use Goodreads cover
+          enrichedBook.coverUrl = (betterCover && !betterCover.includes('placeholder'))
+            ? betterCover
+            : (goodreadsCoverUrl || googleBook.thumbnail || betterCover);
+
+          // Fix 4: Drop books with no resolvable cover
+          if (!enrichedBook.coverUrl) {
+            console.warn(`[DiscoveryCache] Dropped (no cover): "${googleBook.title}" by ${resolvedAuthor}`);
+            droppedNoCover++;
+            notFoundCount++;
+            continue;
+          }
+
+          // Check if rating is missing and try Hardcover as fallback
+          let rating = googleBook.averageRating || 0;
+          if (rating === 0 && googleBook.isbn13) {
+            try {
+              const hardcoverRating = await hardcoverService.getRating(
+                googleBook.isbn13,
+                googleBook.title,
+                resolvedAuthor
+              );
+              if (hardcoverRating) {
+                rating = hardcoverRating;
+              }
+            } catch (ratingError) {
+              // Silently continue without rating
+            }
+          }
+
+          enrichedBook.averageRating = rating;
+
+          // Fix 3: Validate the book before adding to cache
+          const validation = validateBook(enrichedBook);
+          if (!validation.valid) {
+            console.log(`[DiscoveryCache] Dropped (validation): "${googleBook.title}" - ${validation.reason}`);
+            droppedValidation++;
+            notFoundCount++;
+            continue;
+          }
+
+          enrichedBooks.push(enrichedBook);
+          foundCount++;
+          console.log(`[DiscoveryCache] ✓ Enriched: "${googleBook.title}" by ${resolvedAuthor}`);
+        } else {
+          // Book not found in Google Books - drop it (no isbn13/googleBooksId means it fails validation)
+          notFoundCount++;
+          console.log(`[DiscoveryCache] ✗ Not found in Google Books: "${title}" by ${author}`);
+        }
+
+      } catch (error) {
+        console.error(`[DiscoveryCache] Error enriching book "${title}":`, error.message);
+        notFoundCount++;
       }
-    };
-  }
-
-  getAwardsIsbns() {
-    return [
-      '9780765311788',  // The Name of the Wind (Hugo nominee)
-      '9780765326355',  // The Way of Kings (Hugo nominee)
-      '9780316042676',  // The Hunger Games
-      '9780441013593',  // Dune (Hugo winner)
-      '9780553382563',  // A Game of Thrones (Hugo nominee)
-      '9780060853984',  // American Gods (Hugo winner)
-      '9780316043918',  // The Windup Girl (Hugo winner)
-      '9780765316882',  // Mistborn: The Final Empire
-      '9780441005666',  // Ender's Game (Hugo winner)
-      '9780345476882',  // The Curse of Chalion (Hugo nominee)
-      '9780553803709',  // The City & The City (Hugo winner)
-      '9780316068041',  // Ancillary Justice (Hugo winner)
-      '9780765328663',  // Leviathan Wakes (Hugo nominee)
-      '9781250312995',  // The Fifth Season (Hugo winner)
-      '9781250765921',  // A Memory Called Empire (Hugo winner)
-      '9780765377068',  // The Three-Body Problem (Hugo winner)
-      '9781250303566',  // Gideon the Ninth (Hugo nominee)
-      '9781250766607',  // Network Effect (Hugo winner)
-      '9781250768359',  // A Desolation Called Peace (Hugo winner)
-      '9780765375866',  // The Calculating Stars (Hugo winner)
-      '9781250166901',  // The Stone Sky (Hugo winner)
-      '9780765375620',  // All Systems Red (Hugo winner)
-      '9780765397530',  // Binti (Hugo winner)
-      '9781250166901',  // The Obelisk Gate (Hugo nominee)
-      '9780765328663',  // Caliban's War (Hugo nominee)
-      '9781250303566',  // Harrow the Ninth (Hugo nominee)
-      '9781250765921',  // A Desolation Called Peace (Hugo winner)
-      '9780765377068',  // The Dark Forest (Hugo nominee)
-      '9781250303566',  // Nona the Ninth (Hugo nominee)
-      '9781250766607',  // Fugitive Telemetry (Hugo nominee)
-      '9781250768359',  // The Spare Man (Hugo nominee)
-      '9780765375866',  // The Fated Sky (Hugo nominee)
-      '9780765397530',  // Binti: Home (Hugo nominee)
-      '9780765397547',  // Binti: The Night Masquerade (Hugo nominee)
-      '9781250166901',  // The Stone Sky (Hugo winner)
-      '9780765375620',  // Artificial Condition (Hugo winner)
-      '9780765375637',  // Rogue Protocol (Hugo nominee)
-      '9780765375644',  // Exit Strategy (Hugo nominee)
-      '9781250765921',  // A Memory Called Empire (Hugo winner)
-      '9781250766607',  // Network Effect (Hugo winner)
-      '9781250768359',  // A Desolation Called Peace (Hugo winner)
-      '9780765382030',  // The Strange Case of the Alchemist's Daughter (Hugo nominee)
-      '9780765382047',  // European Travel for the Monstrous Gentlewoman (Hugo nominee)
-      '9780765382054',  // The Sinister Mystery of the Mesmerizing Girl (Hugo nominee)
-      '9781250303566',  // Gideon the Ninth (Hugo nominee)
-      '9781250765921',  // A Memory Called Empire (Hugo winner)
-      '9781250766607',  // Network Effect (Hugo winner)
-      '9781250768359',  // A Desolation Called Peace (Hugo winner)
-      '9780765377068',  // The Three-Body Problem (Hugo winner)
-      '9780765377075'   // The Dark Forest (Hugo nominee)
-    ];
-  }
-
-  isRecentBook(book, months = 3) {
-    if (!book.publishedDate) return false;
-
-    const published = this.parseDate(book.publishedDate);
-    if (!published) return false;
-
-    const cutoffDate = new Date();
-    cutoffDate.setMonth(cutoffDate.getMonth() - months);
-
-    return published > cutoffDate;
-  }
-
-  isHiddenGem(book) {
-    const rating = book.averageRating || 0;
-    const ratingsCount = book.ratingsCount || 0;
-    return rating >= 4.0 && ratingsCount < 1000;
-  }
-
-  isPopularBook(book) {
-    // Simple filter for popular fiction books
-    const title = book.title.toLowerCase();
-
-    // Exclude obvious academic/reference books
-    const excludePatterns = [
-      'das science fiction',
-      'analysis of',
-      'studies in',
-      'handbook',
-      'encyclopedia',
-      'companion to'
-    ];
-
-    if (excludePatterns.some(pattern => title.includes(pattern))) {
-      return false;
     }
 
-    return true;
+    console.log(`[DiscoveryCache] Enrichment complete: ${foundCount} added, ${notFoundCount} not found/dropped (${droppedValidation} failed validation, ${droppedNoCover} no cover)`);
+    return enrichedBooks;
   }
 
-  isSeriesStarter(book) {
-    if (!book.title) return false;
+  /**
+   * Generate books for a genre using Goodreads scraping
+   * @param {string} genreKey - The genre key
+   * @param {boolean} isInitialPopulation - Whether this is initial population
+   * @returns {Promise<Array>} Array of enriched book objects
+   */
+  async generateForGenreFromScraping(genreKey, isInitialPopulation = false) {
+    const source = this.genreMappings[genreKey];
+    if (!source) {
+      throw new Error(`Unknown genre key: ${genreKey}`);
+    }
 
-    const title = book.title.toLowerCase();
-    const seriesIndicators = [
-      'book 1',
-      'volume 1',
-      'part 1',
-      '#1',
-      'first book',
-      'initial volume',
-      'beginning',
-      'origins'
-    ];
+    const count = isInitialPopulation ? source.initialCount : source.refreshCount;
+    console.log(`[DiscoveryCache] Generating for genre "${genreKey}" (count: ${count}, initial: ${isInitialPopulation})`);
 
-    return seriesIndicators.some(indicator => title.includes(indicator));
+    // Initialize master cache
+    await masterBookCache.init();
+
+    // Scrape from Goodreads
+    let scrapedBooks = source.type === 'list'
+      ? await goodreadsShelfScraper.scrapeList(source.id, count)
+      : await goodreadsShelfScraper.scrapeShelf(source.name, count);
+
+    console.log(`[DiscoveryCache] Scraped ${scrapedBooks.length} books from Goodreads for "${genreKey}"`);
+
+    // For refresh, filter out already-cached books
+    let booksToEnrich = scrapedBooks;
+    if (!isInitialPopulation) {
+      booksToEnrich = scrapedBooks.filter(b => !masterBookCache.bookExists(b.title, b.author));
+      console.log(`[DiscoveryCache] Filtered to ${booksToEnrich.length} new books (skipping ${scrapedBooks.length - booksToEnrich.length} cached)`);
+    }
+
+    // Enrich with Google Books
+    const enrichedBooks = await this.enrichWithGoogleBooks(booksToEnrich);
+
+    // Add to master cache
+    for (const book of enrichedBooks) {
+      masterBookCache.addBook(book, [genreKey]);
+    }
+
+    // Handle existing books (add genre tag if missing)
+    if (!isInitialPopulation) {
+      for (const scrapedBook of scrapedBooks) {
+        const isbn = masterBookCache.bookExists(scrapedBook.title, scrapedBook.author);
+        if (isbn) {
+          const existing = masterBookCache.cache.books[isbn];
+          if (existing && !existing.genres.includes(genreKey)) {
+            existing.genres.push(genreKey);
+            console.log(`[DiscoveryCache] Added genre "${genreKey}" to existing book: "${existing.title}"`);
+          }
+        }
+      }
+    }
+
+    // Update scrape time
+    masterBookCache.updateScrapeTime(genreKey);
+
+    // Save master cache
+    await masterBookCache.save();
+
+    console.log(`[DiscoveryCache] Generated ${enrichedBooks.length} books for genre "${genreKey}"`);
+    return enrichedBooks;
   }
 
-  parseDate(dateStr) {
-    if (!dateStr) return null;
+  /**
+   * Process a single genre for cache generation
+   * Used by parallel cache generation
+   */
+  async processGenre(genreKey, config) {
+    const startTime = Date.now();
+    console.log(`[DiscoveryCache] [${genreKey}] Starting generation...`);
 
-    const yearMatch = dateStr.match(/\d{4}/);
-    if (!yearMatch) return null;
+    try {
+      let books = [];
 
-    const year = parseInt(yearMatch[0]);
-    const monthMatch = dateStr.match(/\d{4}-(\d{1,2})/);
-    const month = monthMatch ? parseInt(monthMatch[1]) - 1 : 0;
-    const dayMatch = dateStr.match(/\d{4}-\d{1,2}-(\d{1,2})/);
-    const day = dayMatch ? parseInt(dayMatch[1]) : 1;
+      if (genreKey === 'awards') {
+        // Awards genre uses ISBN-based lookup
+        books = await this.fetchAwardsBooks(config.isbns);
+      } else {
+        // Use Goodreads scraping for all other genres
+        books = await this.generateForGenreFromScraping(genreKey, config.isInitialPopulation || false);
+      }
 
-    return new Date(year, month, day);
+      const elapsed = Date.now() - startTime;
+      console.log(`[DiscoveryCache] [${genreKey}] ✓ Completed in ${elapsed}ms - ${books.length} books`);
+
+      return { genreKey, books: books.slice(0, 200), success: true };
+    } catch (error) {
+      const elapsed = Date.now() - startTime;
+      console.error(`[DiscoveryCache] [${genreKey}] ✗ Failed after ${elapsed}ms:`, error.message);
+      return { genreKey, books: [], success: false, error: error.message };
+    }
   }
 
-  async generateDailyCache() {
+  /**
+   * Process multiple genres in parallel with a concurrency limit
+   * Saves cache incrementally after each chunk
+   */
+  async processGenresInParallel(genreEntries, cache, concurrency = 4) {
+    const results = [];
+
+    // Split genres into chunks
+    for (let i = 0; i < genreEntries.length; i += concurrency) {
+      const chunk = genreEntries.slice(i, i + concurrency);
+      const chunkNum = Math.floor(i / concurrency) + 1;
+      const totalChunks = Math.ceil(genreEntries.length / concurrency);
+
+      console.log(`[DiscoveryCache] Processing chunk ${chunkNum}/${totalChunks} (${chunk.length} genres)...`);
+
+      const chunkResults = await Promise.all(
+        chunk.map(([genreKey, config]) => this.processGenre(genreKey, config))
+      );
+
+      // Collect results and update cache immediately after each chunk
+      for (const result of chunkResults) {
+        results.push(result);
+        if (result.success) {
+          cache.genres[result.genreKey] = result.books;
+        } else {
+          // Add empty array for failed genres
+          cache.genres[result.genreKey] = [];
+        }
+      }
+
+      // SAVE CACHE AFTER EACH CHUNK - don't lose progress if later chunks fail
+      await this.saveCacheToFile(cache);
+      this.cache = cache;
+      this.lastGenerated = new Date();
+
+      console.log(`[DiscoveryCache] ✓ Chunk ${chunkNum}/${totalChunks} saved - ${Object.keys(cache.genres).length} genres cached`);
+    }
+
+    return results;
+  }
+
+  /**
+   * Generate cache for all genres using Goodreads scraping
+   * @param {boolean} forceInitialPopulation - Force initial population mode
+   */
+  async generateDailyCache(forceInitialPopulation = true) {
     if (this.isGenerating) {
       console.log('[DiscoveryCache] Cache generation already in progress, skipping...');
-      // Wait for the existing generation to finish? 
-      // For now, just return existing cache (even if stale) or empty if nothing.
       if (this.cache) return this.cache;
 
-      // If we have absolutely nothing and generation is running, we might return empty or wait.
-      // Let's protect against thundering herd by waiting a bit if we have no cache.
       if (!this.cache) {
         console.log('[DiscoveryCache] No cache available and generation in progress, waiting...');
         await this.sleep(2000);
-        return this.cache || { genres: {} }; // Return whatever we found after wait
+        return this.cache || { genres: {} };
       }
       return this.cache;
     }
 
     this.isGenerating = true;
-    console.log('[DiscoveryCache] Starting daily cache generation...');
+    console.log('[DiscoveryCache] Starting PARALLEL cache generation with Goodreads scraper (concurrency: 4)...');
     const startTime = Date.now();
 
     try {
@@ -214,34 +341,29 @@ class DiscoveryCache {
         genres: {}
       };
 
-      for (const [genreKey, config] of Object.entries(this.genreMappings)) {
-        console.log(`[DiscoveryCache] Generating cache for genre: ${genreKey}`);
+      // Initialize master cache
+      await masterBookCache.init();
 
-        let books = [];
+      // Prepare genre entries
+      const genreEntries = Object.entries(this.genreMappings).map(([genreKey, source]) => {
+        return [genreKey, { isInitialPopulation: forceInitialPopulation }];
+      });
 
-        if (genreKey === 'awards') {
-          books = await this.fetchAwardsBooks(config.isbns);
-        } else if (config.aiPrompt) {
-          // AI-powered curation
-          console.log(`[DiscoveryCache] Using AI curation for ${genreKey}`);
-          books = await aiBookCurator.generateAndEnrich(config.aiPrompt);
+      // Add awards genre
+      genreEntries.push(['awards', { isbns: this.awardsIsbns }]);
+
+      // Process genres in parallel
+      const results = await this.processGenresInParallel(genreEntries, cache, 4);
+
+      // Count successes and failures
+      let successCount = 0;
+      let failCount = 0;
+      for (const result of results) {
+        if (result.success) {
+          successCount++;
         } else {
-          // Fallback to Google Books API (for backward compatibility)
-          const query = config.query;
-          books = await googleBooksApi.fetchBooksBySubject(query, 40, config.orderBy || 'relevance');
-
-          if (config.filter) {
-            books = books.filter(config.filter);
-          }
+          failCount++;
         }
-
-        if (books.length > 0) {
-          books = await this.enrichBooksWithCovers(books);
-        }
-
-        cache.genres[genreKey] = books.slice(0, 40);
-        console.log(`[DiscoveryCache] Cached ${cache.genres[genreKey].length} books for ${genreKey}`);
-        await this.sleep(1000);
       }
 
       await this.saveCacheToFile(cache);
@@ -249,7 +371,8 @@ class DiscoveryCache {
       this.lastGenerated = new Date();
 
       const elapsed = Date.now() - startTime;
-      console.log(`[DiscoveryCache] Daily cache generation completed in ${elapsed}ms`);
+      console.log(`[DiscoveryCache] Parallel cache generation completed in ${elapsed}ms`);
+      console.log(`[DiscoveryCache] Summary: ${successCount} succeeded, ${failCount} failed`);
 
       this.isGenerating = false;
       return cache;
@@ -260,6 +383,9 @@ class DiscoveryCache {
     }
   }
 
+  /**
+   * Fetch award-winning books by ISBN
+   */
   async fetchAwardsBooks(isbns) {
     const books = [];
     if (!isbns || !Array.isArray(isbns) || isbns.length === 0) {
@@ -275,8 +401,36 @@ class DiscoveryCache {
         console.log(`[DiscoveryCache] Fetching awards book ${i + 1}/${isbns.length}: ISBN ${isbn}`);
         const result = await googleBooksApi.searchBooks(`isbn:${isbn}`, 1);
         if (result.length > 0) {
-          books.push(result[0]);
-          console.log(`[DiscoveryCache] ✓ Found: ${result[0].title}`);
+          const enrichedBook = result[0];
+
+          // Enrich with cover
+          const awardAuthor = Array.isArray(enrichedBook.authors) ? enrichedBook.authors[0] : '';
+          const coverUrl = await coverResolver.getCoverUrl(
+            enrichedBook.isbn13,
+            enrichedBook.thumbnail,
+            enrichedBook.title,
+            awardAuthor
+          );
+
+          enrichedBook.coverUrl = (coverUrl && !coverUrl.includes('placeholder'))
+            ? coverUrl
+            : (enrichedBook.thumbnail || coverUrl);
+
+          // Fix 4: Drop books with no resolvable cover
+          if (!enrichedBook.coverUrl) {
+            console.warn(`[DiscoveryCache] Awards: dropped (no cover): "${enrichedBook.title}"`);
+            continue;
+          }
+
+          // Fix 3: Validate before adding to awards cache
+          const validation = validateBook(enrichedBook);
+          if (!validation.valid) {
+            console.log(`[DiscoveryCache] Awards: dropped (validation): "${enrichedBook.title}" - ${validation.reason}`);
+            continue;
+          }
+
+          books.push(enrichedBook);
+          console.log(`[DiscoveryCache] ✓ Found: "${enrichedBook.title}"`);
         } else {
           console.log(`[DiscoveryCache] ✗ No results for ISBN ${isbn}`);
         }
@@ -293,53 +447,42 @@ class DiscoveryCache {
     return books;
   }
 
-  async enrichBooksWithCovers(books) {
-    const enrichedBooks = [];
+  /**
+   * Get random books for a genre from the master cache
+   * @param {string} genreKey - The genre key
+   * @param {number} count - Number of books to return
+   * @returns {Promise<Array>} Array of book objects
+   */
+  async getBooks(genreKey, count = 50) {
+    await masterBookCache.init();
 
-    for (const book of books) {
-      try {
-        // Pass title and author for fallback search when ISBN fails
-        const author = Array.isArray(book.authors) ? book.authors[0] : book.author;
-        const coverUrl = await coverResolver.getCoverUrl(
-          book.isbn13,
-          book.thumbnail,
-          book.title,
-          author
-        );
-
-        // Check if rating is missing and try Hardcover as fallback
-        let rating = book.averageRating || 0;
-        if (rating === 0 && (book.isbn13 || book.title)) {
-          try {
-            const hardcoverRating = await hardcoverService.getRating(
-              book.isbn13,
-              book.title,
-              author
-            );
-            if (hardcoverRating) {
-              rating = hardcoverRating;
-              console.log(`[DiscoveryCache] Got Hardcover rating ${rating} for: ${book.title}`);
-            }
-          } catch (ratingError) {
-            // Silently continue without rating
-          }
-        }
-
-        enrichedBooks.push({
-          ...book,
-          coverUrl: coverUrl || book.thumbnail || coverResolver.getPlaceholderUrl(),
-          averageRating: rating
-        });
-      } catch (error) {
-        console.error(`[DiscoveryCache] Error enriching book ${book.isbn13}:`, error.message);
-        enrichedBooks.push({
-          ...book,
-          coverUrl: book.thumbnail || coverResolver.getPlaceholderUrl()
-        });
+    // Check if genre exists in our mappings
+    if (genreKey === 'awards') {
+      // Awards genre uses special handling
+      const cache = await this.loadCacheFromFile();
+      if (cache?.genres?.awards) {
+        const shuffled = [...cache.genres.awards].sort(() => Math.random() - 0.5);
+        return shuffled.slice(0, count);
       }
+      return [];
     }
 
-    return enrichedBooks;
+    // Check if this is a valid genre key
+    if (!this.genreMappings[genreKey]) {
+      console.warn(`[DiscoveryCache] Unknown genre key: ${genreKey}`);
+      return [];
+    }
+
+    let books = masterBookCache.getRandomBooks(genreKey, count);
+
+    // If cache is empty, trigger generation
+    if (books.length === 0) {
+      console.log(`[DiscoveryCache] Cache empty for genre "${genreKey}", triggering generation...`);
+      await this.generateForGenreFromScraping(genreKey, true);
+      books = masterBookCache.getRandomBooks(genreKey, count);
+    }
+
+    return books;
   }
 
   async saveCacheToFile(cache) {
@@ -375,11 +518,25 @@ class DiscoveryCache {
     }
   }
 
+  /**
+   * Legacy method for backward compatibility
+   * Returns randomized books from cache
+   */
   async getRandomizedBooks(genreKey, count = 50) {
     const startTime = Date.now();
     const logPrefix = `[DiscoveryCache] [${new Date().toISOString()}] [${genreKey}]`;
 
     try {
+      // Try to get books from master cache first
+      if (genreKey !== 'awards') {
+        const books = await this.getBooks(genreKey, count);
+        if (books.length > 0) {
+          console.log(`${logPrefix} SUCCESS: Returned ${books.length} books from master cache in ${Date.now() - startTime}ms`);
+          return books;
+        }
+      }
+
+      // Fall back to old cache file for awards or if master cache is empty
       if (!this.cache) {
         console.log(`${logPrefix} No cache in memory, loading from file...`);
         await this.loadCacheFromFile();
@@ -473,6 +630,19 @@ class DiscoveryCache {
     }
 
     return stats;
+  }
+
+  /**
+   * Get master cache statistics
+   */
+  getMasterCacheStats() {
+    return masterBookCache.getStats();
+  }
+
+  deduplicateBooksAcrossGenres(cache) {
+    // No longer needed with ISBN-based master cache
+    // Books can belong to multiple genres
+    return cache;
   }
 }
 

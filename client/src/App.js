@@ -4,6 +4,7 @@ import { Toaster } from 'react-hot-toast';
 import HomePage from './components/HomePage';
 import AdminDashboard from './components/AdminDashboard';
 import ImportLog from './components/ImportLog';
+import CacheManagement from './components/CacheManagement';
 import FloatingAdminButton from './components/FloatingAdminButton';
 import './App.css';
 
@@ -15,6 +16,7 @@ function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/admin" element={<AdminDashboard />} />
           <Route path="/admin/imports" element={<ImportLog />} />
+          <Route path="/admin/cache" element={<CacheManagement />} />
         </Routes>
         <FloatingAdminButton />
         <Toaster

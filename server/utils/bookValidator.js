@@ -1,0 +1,100 @@
+/**
+ * Book Validator
+ * Validates book objects before they are allowed into the discovery cache.
+ * All checks must pass for a book to be accepted.
+ */
+
+const COLLECTION_PATTERNS = [
+  /box\s*set/i,
+  /\bcollection\b/i,
+  /\bomnibus\b/i,
+  /complete\s+series/i,
+  /books\s+1[-–]/i,
+  /volumes?\s+1[-–]/i,
+  /the\s+complete\b/i,
+  /\d-book\b/i,
+  /trilogy\s+collection/i,
+  /series\s+collection/i,
+];
+
+const NON_BOOK_PATTERNS = [
+  /\bjournal\b/i,
+  /\bnotebook\b/i,
+  /\bplanner\b/i,
+  /\bdiary\b/i,
+  /coloring\s+book/i,
+  /activity\s+book/i,
+  /\bworkbook\b/i,
+  /\bstationery\b/i,
+];
+
+/**
+ * Validate a book object for cache inclusion.
+ *
+ * Checks (all must pass):
+ * 1. Non-empty title
+ * 2. At least one author
+ * 3. Title does not match collection/box-set patterns
+ * 4. Title does not match non-book item patterns
+ * 5. Has a valid isbn13 (13 digits) OR a valid googleBooksId
+ * 6. pageCount, if present and > 0, must be greater than 50
+ *
+ * @param {Object} book - Book object to validate
+ * @returns {{ valid: boolean, reason: string }}
+ */
+function validateBook(book) {
+  // 1. Must have a non-empty title
+  if (!book.title || typeof book.title !== 'string' || book.title.trim() === '') {
+    return { valid: false, reason: 'Missing title' };
+  }
+
+  const title = book.title.trim();
+
+  // 2. Must have at least one author
+  const hasAuthor =
+    (Array.isArray(book.authors) && book.authors.length > 0 && book.authors[0] &&
+      book.authors[0].trim() !== '') ||
+    (typeof book.author === 'string' && book.author.trim() !== '');
+
+  if (!hasAuthor) {
+    return { valid: false, reason: 'Missing author' };
+  }
+
+  // 3. Title must not match collection/box-set patterns
+  for (const pattern of COLLECTION_PATTERNS) {
+    if (pattern.test(title)) {
+      return { valid: false, reason: `Collection or box set (title matches: ${pattern.source})` };
+    }
+  }
+
+  // 4. Title must not match non-book item patterns
+  for (const pattern of NON_BOOK_PATTERNS) {
+    if (pattern.test(title)) {
+      return { valid: false, reason: `Non-book item (title matches: ${pattern.source})` };
+    }
+  }
+
+  // 5. Must have a valid isbn13 OR a valid googleBooksId
+  const hasIsbn13 = typeof book.isbn13 === 'string' && /^\d{13}$/.test(book.isbn13.trim());
+  const hasGoogleBooksId =
+    typeof book.googleBooksId === 'string' && book.googleBooksId.trim() !== '';
+
+  if (!hasIsbn13 && !hasGoogleBooksId) {
+    return { valid: false, reason: 'No valid isbn13 or googleBooksId' };
+  }
+
+  // 6. pageCount if present must be > 50 (filters out short-form content)
+  if (
+    book.pageCount !== undefined &&
+    book.pageCount !== null &&
+    typeof book.pageCount === 'number' &&
+    book.pageCount > 0 &&
+    book.pageCount <= 50
+  ) {
+    return { valid: false, reason: `Page count too low (${book.pageCount})` };
+  }
+
+  return { valid: true, reason: '' };
+}
+
+module.exports = { validateBook, isValidBook: validateBook };

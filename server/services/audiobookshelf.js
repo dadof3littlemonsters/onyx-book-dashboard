@@ -106,7 +106,11 @@ class AudiobookshelfService {
     }
 
     try {
-      const libraries = await this.makeRequest('/api/libraries');
+      const data = await this.makeRequest('/api/libraries');
+
+      // Robust array handling - ABS may return wrapped object or direct array
+      const libraries = Array.isArray(data) ? data : (data.libraries || []);
+      console.log(`[DEBUG] ABS libraries response type: ${Array.isArray(data) ? 'direct array' : 'wrapped object'}, count: ${libraries.length}`);
 
       const processedLibraries = libraries.map(library => ({
         id: library.id,

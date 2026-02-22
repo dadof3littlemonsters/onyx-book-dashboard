@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Shield, Search, Download, Clock, X, MessageCircle } from 'lucide-react';
+import { Shield, Search, Download, Clock, X, MessageCircle, Database } from 'lucide-react';
 import toast from 'react-hot-toast';
 import Header from './Header';
 import './AdminPanel.css';
@@ -364,6 +364,10 @@ const AdminDashboard = () => {
               <a href="/admin/imports" className="nav-tab">
                 <img src="/import-log-icon.png" alt="" style={{ height: '18px', width: 'auto' }} />
                 Import Log
+              </a>
+              <a href="/admin/cache" className="nav-tab">
+                <Database size={18} />
+                Cache
               </a>
               {telegramStatus && (
                 <button

@@ -1,3 +1,4 @@
+require('dotenv').config();
 const axios = require('axios');
 
 class GoogleBooksApi {
@@ -351,8 +352,34 @@ class GoogleBooksApi {
       }
     });
 
-    const result = Array.from(isbnMap.values()).concat(Array.from(idMap.values()));
-    console.log(`[GoogleBooks] Deduplication: ${result.length} unique items`);
+    // Secondary dedup pass for books without an ISBN13:
+    // Normalise title (lowercase, strip punctuation, strip subtitles) + first author,
+    // then deduplicate on that composite key to prevent the same book appearing
+    // multiple times under different editions or googleBooksIds.
+    const normalMap = new Map();
+    for (const book of idMap.values()) {
+      const rawTitle = book.title || '';
+      const normalTitle = rawTitle
+        .toLowerCase()
+        .replace(/\s*[:|-]\s*.*/u, '')   // strip subtitle after : | -
+        .replace(/[^\w\s]/gu, '')         // strip punctuation
+        .replace(/\s+/g, ' ')
+        .trim();
+      const firstAuthor = (Array.isArray(book.authors) ? book.authors[0] : '')
+        .toLowerCase()
+        .replace(/[^\w\s]/gu, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const normalKey = `${normalTitle}|${firstAuthor}`;
+      if (!normalMap.has(normalKey)) {
+        normalMap.set(normalKey, book);
+      } else {
+        duplicates++;
+      }
+    }
+
+    const result = Array.from(isbnMap.values()).concat(Array.from(normalMap.values()));
+    console.log(`[GoogleBooks] Deduplication: ${books.length} → ${result.length} unique (${duplicates} duplicates removed, ${booksWithoutIsbn} had no ISBN13)`);
     return result;
   }
 

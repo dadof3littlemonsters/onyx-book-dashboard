@@ -15,9 +15,13 @@ const BookRow = ({ category, books, onBookSelect }) => {
     if (typeof cover === 'string' && cover.includes('books.google.com')) {
       return cover;
     }
-    // Only proxy other remote URLs (Hardcover hotlink protection)
-    if (typeof cover === 'string' && cover.startsWith('http')) {
+    // Hardcover assets need proxying (hotlink protection)
+    if (typeof cover === 'string' && cover.includes('hardcover.app')) {
       return `/api/proxy-image?url=${encodeURIComponent(cover)}`;
+    }
+    // For other http URLs, try direct first (browser will handle CORS)
+    if (typeof cover === 'string' && cover.startsWith('http')) {
+      return cover;
     }
     return cover;
   };

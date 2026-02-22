@@ -7,7 +7,7 @@ const axios = require('axios');
 
 class HardcoverService {
     constructor() {
-        this.token = process.env.HARDCOVER_API_TOKEN;
+        this.token = process.env.HARDCOVER_TOKEN;
         this.apiUrl = 'https://api.hardcover.app/v1/graphql';
         this.cache = new Map();
         this.cacheTTL = 24 * 60 * 60 * 1000; // 24 hours
