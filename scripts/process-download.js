@@ -44,7 +44,31 @@ function parseTorrentName(name) {
         return { title, author: authorPart, series: null };
     }
 
-    // Pattern 0b: "(Author Name)" before cleaning
+    // Pattern 0b: Z-Library Telegram bot format (underscore-separated, no parens)
+    // e.g. "Tress_of_the_Emerald_Sea_Brandon_San_z_library_sk,_1lib_sk,"
+    // or "Some_Title_Author_Name_z-lib.org"
+    const zlibTelegramMatch = cleanName.match(/^(.+?)_z[_-](?:library|lib)(?:[_,.]|$)/i);
+    if (zlibTelegramMatch) {
+        const raw = zlibTelegramMatch[1].replace(/_/g, ' ').trim();
+        const words = raw.split(' ');
+        let title, author = null;
+        // If last 2 words both start with uppercase they're likely "First Last" author name
+        if (words.length > 3) {
+            const lastTwo = words.slice(-2);
+            if (lastTwo.every(w => /^[A-Z]/.test(w))) {
+                author = lastTwo.join(' ');
+                title = words.slice(0, -2).join(' ');
+            } else {
+                title = raw;
+            }
+        } else {
+            title = raw;
+        }
+        console.log(`[PARSER] Z-Library Telegram: Title="${title}" Author="${author || 'null'}"`);
+        return { title, author, series: null };
+    }
+
+    // Pattern 0c: "(Author Name)" before cleaning
     const parenMatch = cleanName.match(/^(.+?)\s*\(([A-Z][a-z]+[,\s]+[A-Z][^)]*)\)/);
     if (parenMatch) {
         let title = parenMatch[1].trim();
