@@ -1247,23 +1247,6 @@ const COVER_CACHE_CONTROL = 'public, max-age=604800, stale-while-revalidate=8640
 const COVER_FETCH_TIMEOUT_MS = 10000;
 const COVER_MAX_REDIRECTS = 5;
 const COVER_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-const COVER_ALLOWED_HOSTS = new Set([
-  'assets.hardcover.app',
-  'via.placeholder.com',
-  'covers.openlibrary.org',
-  'images-na.ssl-images-amazon.com',
-  'images-eu.ssl-images-amazon.com',
-  'images-fe.ssl-images-amazon.com',
-  'm.media-amazon.com',
-  'images.amazon.com',
-  'books.google.com',
-  'storage.googleapis.com',
-  'lh3.googleusercontent.com',
-  'covers.googleapis.com',
-  'images.gr-assets.com',
-  'i.gr-assets.com'
-]);
-const COVER_ALLOWED_SUFFIXES = ['.googleusercontent.com'];
 
 function coerceQueryString(value) {
   if (Array.isArray(value)) return value[0] || '';
@@ -1299,9 +1282,7 @@ function isLocalHostname(hostname) {
 
 function isAllowedCoverHost(hostname) {
   const host = String(hostname || '').toLowerCase();
-  if (!host || isLocalHostname(host)) return false;
-  if (COVER_ALLOWED_HOSTS.has(host)) return true;
-  return COVER_ALLOWED_SUFFIXES.some((suffix) => host.endsWith(suffix));
+  return !!(host) && !isLocalHostname(host);
 }
 
 function getCoverFetchHeaders(hostname) {
