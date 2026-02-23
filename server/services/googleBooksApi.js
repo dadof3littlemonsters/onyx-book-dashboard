@@ -255,6 +255,35 @@ class GoogleBooksApi {
     }
   }
 
+  normalizeGoogleCoverUrl(url) {
+    if (!url || typeof url !== 'string') return url;
+
+    let normalizedUrl = url;
+    if (normalizedUrl.startsWith('http://')) {
+      normalizedUrl = normalizedUrl.replace('http://', 'https://');
+    }
+
+    try {
+      const parsed = new URL(normalizedUrl);
+      const host = (parsed.hostname || '').toLowerCase();
+      const isGoogleCoverHost = (
+        host === 'books.google.com' ||
+        host === 'covers.googleapis.com' ||
+        host === 'lh3.googleusercontent.com' ||
+        host.endsWith('.googleusercontent.com')
+      );
+
+      if (isGoogleCoverHost && parsed.searchParams.get('zoom') === '1') {
+        parsed.searchParams.set('zoom', '3');
+        normalizedUrl = parsed.toString();
+      }
+    } catch (error) {
+      // If URL parsing fails, fall back to the best-effort normalized URL.
+    }
+
+    return normalizedUrl;
+  }
+
   processVolume(volume) {
     const volumeInfo = volume.volumeInfo || {};
     const industryIdentifiers = volumeInfo.industryIdentifiers || [];
@@ -285,9 +314,7 @@ class GoogleBooksApi {
       thumbnail = volumeInfo.imageLinks.thumbnail ||
         volumeInfo.imageLinks.smallThumbnail ||
         volumeInfo.imageLinks.medium;
-      if (thumbnail && thumbnail.startsWith('http://')) {
-        thumbnail = thumbnail.replace('http://', 'https://');
-      }
+      thumbnail = this.normalizeGoogleCoverUrl(thumbnail);
     }
 
     return {

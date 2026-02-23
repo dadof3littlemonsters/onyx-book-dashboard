@@ -7,34 +7,38 @@ const BookRow = ({ category, books, onBookSelect }) => {
   const [showLeftArrow, setShowLeftArrow] = useState(false);
   const [showRightArrow, setShowRightArrow] = useState(true);
 
-  const getCoverSrc = (cover) => {
-    if (!cover) return null;
-    // If server already returns a proxied path, keep it
-    if (typeof cover === 'string' && cover.startsWith('/api/proxy')) return cover;
-    // Google Books images don't need proxying (CORS friendly)
-    if (typeof cover === 'string' && cover.includes('books.google.com')) {
-      return cover;
-    }
-    // Hardcover assets need proxying (hotlink protection)
-    if (typeof cover === 'string' && cover.includes('hardcover.app')) {
-      return `/api/proxy-image?url=${encodeURIComponent(cover)}`;
-    }
-    // Goodreads CDN blocks direct hotlinking from browsers — proxy via server
-    if (typeof cover === 'string' && (cover.includes('images.gr-assets.com') || cover.includes('i.gr-assets.com'))) {
-      return `/api/proxy-image?url=${encodeURIComponent(cover)}`;
-    }
-    // For other http URLs, try direct first (browser will handle CORS)
-    if (typeof cover === 'string' && cover.startsWith('http')) {
-      return cover;
-    }
-    return cover;
-  };
+  const getCoverSrc = (book, options = {}) => {
+    const params = new URLSearchParams();
+    const rawCover = options.placeholderOnly ? null : (book?.coverUrl || book?.thumbnail || book?.cover || null);
 
-  const getInitials = (title) => {
-    const t = (title || '').trim();
-    if (!t) return '📚';
-    const words = t.split(/\s+/).slice(0, 2);
-    return words.map(w => w[0]?.toUpperCase()).join('');
+    if (typeof rawCover === 'string' && rawCover.startsWith('/api/cover')) {
+      return rawCover;
+    }
+
+    let cover = rawCover;
+    if (typeof rawCover === 'string' && rawCover.startsWith('/api/proxy-image')) {
+      const qs = rawCover.split('?')[1] || '';
+      const upstreamFromProxy = new URLSearchParams(qs).get('url');
+      cover = upstreamFromProxy || null;
+    }
+
+    if (cover && typeof cover === 'string' && /^https?:\/\//i.test(cover)) {
+      params.set('url', cover);
+    }
+    if (book?.title) {
+      params.set('title', book.title);
+    }
+    if (book?.isbn13) {
+      params.set('isbn13', book.isbn13);
+    }
+    if (book?.isbn) {
+      params.set('isbn', book.isbn);
+    }
+    if (book?.goodreadsCoverUrl) {
+      params.set('goodreadsUrl', book.goodreadsCoverUrl);
+    }
+
+    return `/api/cover?${params.toString()}`;
   };
 
   const [rowBooks, setRowBooks] = useState([]);
@@ -111,8 +115,7 @@ const BookRow = ({ category, books, onBookSelect }) => {
       )}
       <div className="book-scroll-container" ref={scrollRef}>
         {rowBooks.map((book) => {
-          const coverSrc = getCoverSrc(book.coverUrl || book.thumbnail);
-          const hasError = imgErrors[book.id];
+          const coverSrc = getCoverSrc(book, { placeholderOnly: !!imgErrors[book.id] });
 
           return (
             <div
@@ -121,18 +124,12 @@ const BookRow = ({ category, books, onBookSelect }) => {
               onClick={() => onBookSelect(book)}
             >
               <div className="book-cover">
-                {coverSrc && !hasError ? (
-                  <img
-                    src={coverSrc}
-                    alt={book.title}
-                    loading="lazy"
-                    onError={() => handleImgError(book.id)}
-                  />
-                ) : (
-                  <div className="book-cover-placeholder" aria-label={book.title}>
-                    {getInitials(book.title)}
-                  </div>
-                )}
+                <img
+                  src={coverSrc}
+                  alt={book.title}
+                  loading="lazy"
+                  onError={() => handleImgError(book.id)}
+                />
                 {book.libraryStatus && (
                   <div className="library-badge" data-status={book.libraryStatus}>
                     {book.libraryStatus === 'owned' ? '✓' : ''}

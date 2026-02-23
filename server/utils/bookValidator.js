@@ -140,7 +140,19 @@ function validateBook(book) {
     return { valid: false, reason: 'No valid isbn13 or googleBooksId' };
   }
 
-  // 6. pageCount if present must be > 50 (filters out short-form content)
+  // 6. Reject books whose only available cover comes from images-na.ssl-images-amazon.com
+  //    (these URLs return a 43-byte stub; Amazon has blocked direct hotlinking from this CDN path)
+  const DEAD_AMAZON_HOSTNAME = 'images-na.ssl-images-amazon.com';
+  const coverFields = [book.coverUrl, book.thumbnail, book.goodreadsCoverUrl].filter(Boolean);
+  const hasAnyCover = coverFields.length > 0;
+  const allCoversAreDead = hasAnyCover && coverFields.every(
+    (u) => typeof u === 'string' && u.includes(DEAD_AMAZON_HOSTNAME)
+  );
+  if (allCoversAreDead) {
+    return { valid: false, reason: 'All cover URLs are dead Amazon SSL paths (images-na.ssl-images-amazon.com)' };
+  }
+
+  // 7. pageCount if present must be > 50 (filters out short-form content)
   if (
     book.pageCount !== undefined &&
     book.pageCount !== null &&

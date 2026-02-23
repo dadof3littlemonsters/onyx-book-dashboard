@@ -6,6 +6,7 @@ import './BookDrawer.css';
 const BookDrawer = ({ book, isOpen, onClose, onRequest }) => {
   const [requestAudiobook, setRequestAudiobook] = useState(false);
   const [requestEbook, setRequestEbook] = useState(false);
+  const [coverImgErrored, setCoverImgErrored] = useState(false);
   const drawerRef = useRef(null);
   const previousFocusRef = useRef(null);
 
@@ -26,6 +27,7 @@ const BookDrawer = ({ book, isOpen, onClose, onRequest }) => {
   // Focus management
   useEffect(() => {
     if (isOpen) {
+      setCoverImgErrored(false);
       // Save current focus
       previousFocusRef.current = document.activeElement;
       // Focus first interactive element in drawer after animation
@@ -43,23 +45,38 @@ const BookDrawer = ({ book, isOpen, onClose, onRequest }) => {
 
   if (!isOpen || !book) return null;
 
-  const getCoverSrc = (cover) => {
-    if (!cover) return null;
-    // If server already returns a proxied path, keep it
-    if (typeof cover === 'string' && cover.startsWith('/api/proxy')) return cover;
-    // Google Books images don't need proxying (CORS friendly)
-    if (typeof cover === 'string' && cover.includes('books.google.com')) {
-      return cover;
+  const getCoverSrc = (bookData, options = {}) => {
+    const params = new URLSearchParams();
+    const rawCover = options.placeholderOnly ? null : (bookData?.cover || bookData?.coverUrl || bookData?.thumbnail || null);
+
+    if (typeof rawCover === 'string' && rawCover.startsWith('/api/cover')) {
+      return rawCover;
     }
-    // Hardcover assets need proxying (hotlink protection)
-    if (typeof cover === 'string' && cover.includes('hardcover.app')) {
-      return `/api/proxy-image?url=${encodeURIComponent(cover)}`;
+
+    let cover = rawCover;
+    if (typeof rawCover === 'string' && rawCover.startsWith('/api/proxy-image')) {
+      const qs = rawCover.split('?')[1] || '';
+      const upstreamFromProxy = new URLSearchParams(qs).get('url');
+      cover = upstreamFromProxy || null;
     }
-    // For other http URLs, try direct first (browser will handle CORS)
-    if (typeof cover === 'string' && cover.startsWith('http')) {
-      return cover;
+
+    if (cover && typeof cover === 'string' && /^https?:\/\//i.test(cover)) {
+      params.set('url', cover);
     }
-    return cover;
+    if (bookData?.title) {
+      params.set('title', bookData.title);
+    }
+    if (bookData?.isbn13) {
+      params.set('isbn13', bookData.isbn13);
+    }
+    if (bookData?.isbn) {
+      params.set('isbn', bookData.isbn);
+    }
+    if (bookData?.goodreadsCoverUrl) {
+      params.set('goodreadsUrl', bookData.goodreadsCoverUrl);
+    }
+
+    return `/api/cover?${params.toString()}`;
   };
 
   const handleRequest = () => {
@@ -96,23 +113,11 @@ const BookDrawer = ({ book, isOpen, onClose, onRequest }) => {
         <div className="drawer-content">
           <div className="book-details">
             <div className="book-cover-large">
-              {getCoverSrc(book.cover || book.coverUrl || book.thumbnail) ? (
-                <img src={getCoverSrc(book.cover || book.coverUrl || book.thumbnail)} alt={book.title} />
-              ) : (
-                <div className="book-cover-placeholder" style={{
-                  width: '100%',
-                  height: '300px',
-                  backgroundColor: '#f0f0f0',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '48px',
-                  fontWeight: 'bold',
-                  color: '#666'
-                }}>
-                  {book.title?.split(/\s+/).slice(0, 2).map(w => w[0]?.toUpperCase()).join('') || '📚'}
-                </div>
-              )}
+              <img
+                src={getCoverSrc(book, { placeholderOnly: coverImgErrored })}
+                alt={book.title}
+                onError={() => setCoverImgErrored(true)}
+              />
             </div>
 
             <div className="book-meta">
