@@ -4,6 +4,9 @@
  * All checks must pass for a book to be accepted.
  */
 
+const https = require('https');
+const http  = require('http');
+
 /**
  * Patterns that identify multi-book bundles / box sets / series collections.
  * Any title match → rejected.
@@ -166,4 +169,95 @@ function validateBook(book) {
   return { valid: true, reason: '' };
 }
 
-module.exports = { validateBook, isValidBook: validateBook };
+/**
+ * Validate that a cover URL actually serves a real image.
+ *
+ * Rejects if:
+ *  - URL is missing or not a string
+ *  - HTTP response is not 2xx
+ *  - Content-Type is not an image/*
+ *  - Response body is less than 5 KB (Google placeholder is ~900 bytes)
+ *
+ * Uses only built-in Node.js modules (no external dependencies).
+ * Follows up to 3 redirects.
+ *
+ * @param {string} url
+ * @returns {Promise<{ valid: boolean, reason: string }>}
+ */
+function validateCoverUrl(url) {
+  const MIN_BYTES = 5 * 1024; // 5 KB
+  const TIMEOUT_MS = 10_000;
+  const MAX_REDIRECTS = 3;
+
+  if (!url || typeof url !== 'string') {
+    return Promise.resolve({ valid: false, reason: 'Cover URL is missing or not a string' });
+  }
+
+  function fetch(urlStr, redirectsLeft) {
+    return new Promise((resolve) => {
+      let parsed;
+      try { parsed = new URL(urlStr); }
+      catch { return resolve({ valid: false, reason: `Invalid cover URL: ${urlStr}` }); }
+
+      const isGoodreads = parsed.hostname.includes('gr-assets.com');
+      const lib = parsed.protocol === 'https:' ? https : http;
+
+      const reqHeaders = {
+        'User-Agent': 'Mozilla/5.0 (compatible; Onyx/1.0)',
+        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+      };
+      if (isGoodreads) {
+        reqHeaders['Referer'] = 'https://www.goodreads.com/';
+        reqHeaders['Origin']  = 'https://www.goodreads.com';
+      }
+
+      const req = lib.request(urlStr, { method: 'GET', headers: reqHeaders, timeout: TIMEOUT_MS }, (res) => {
+        const status = res.statusCode;
+
+        // Follow redirects
+        if ((status === 301 || status === 302 || status === 303 || status === 307 || status === 308)
+            && res.headers.location && redirectsLeft > 0) {
+          res.resume(); // drain
+          const next = new URL(res.headers.location, urlStr).href;
+          return resolve(fetch(next, redirectsLeft - 1));
+        }
+
+        if (status < 200 || status >= 300) {
+          res.resume();
+          return resolve({ valid: false, reason: `Cover URL returned HTTP ${status}` });
+        }
+
+        const ct = (res.headers['content-type'] || '').toLowerCase();
+        if (!ct.startsWith('image/')) {
+          res.resume();
+          return resolve({ valid: false, reason: `Cover URL content-type is not image/* (got: ${ct || 'none'})` });
+        }
+
+        // Collect bytes until we have MIN_BYTES or the response ends
+        let received = 0;
+        res.on('data', (chunk) => {
+          received += chunk.length;
+          if (received >= MIN_BYTES) {
+            res.destroy(); // we have enough
+          }
+        });
+        res.on('close', () => {
+          if (received < MIN_BYTES) {
+            resolve({ valid: false, reason: `Cover image too small (${received} bytes, min ${MIN_BYTES})` });
+          } else {
+            resolve({ valid: true, reason: '' });
+          }
+        });
+        res.on('error', (err) => resolve({ valid: false, reason: `Cover fetch error: ${err.message}` }));
+      });
+
+      req.on('timeout', () => { req.destroy(); resolve({ valid: false, reason: 'Cover URL request timed out' }); });
+      req.on('error',   (err) => resolve({ valid: false, reason: `Cover request error: ${err.message}` }));
+      req.end();
+    });
+  }
+
+  return fetch(url, MAX_REDIRECTS);
+}
+
+module.exports = { validateBook, isValidBook: validateBook, validateCoverUrl };

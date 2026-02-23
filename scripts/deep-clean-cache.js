@@ -21,7 +21,7 @@
 
 const fs   = require('fs').promises;
 const path = require('path');
-const { validateBook } = require('../server/utils/bookValidator');
+const { validateBook, validateCoverUrl } = require('../server/utils/bookValidator');
 
 const CACHE_PATH = path.join(__dirname, '../data/discovery_cache.json');
 
@@ -126,7 +126,67 @@ async function main() {
     cache.genres[genre] = kept;
   }
 
-  // ── Step 2: cross-genre dedup ────────────────────────────────────────────
+  // ── Step 2: cover URL validation ─────────────────────────────────────────
+  // Collect every unique cover URL we need to validate, then check them all
+  // concurrently (capped at COVER_CONCURRENCY) to avoid thundering-herd issues.
+
+  const COVER_CONCURRENCY = 10;
+
+  // Build a deduplicated list of (url → [{ genre, bookIndex }])  references
+  const urlToRefs = new Map();  // url → [{ genre, idx }]
+
+  for (const [genre, books] of Object.entries(cache.genres)) {
+    for (let i = 0; i < books.length; i++) {
+      const book = books[i];
+      const cover = book.coverUrl || book.goodreadsCoverUrl || book.thumbnail || null;
+      if (!cover) continue;
+      if (!urlToRefs.has(cover)) urlToRefs.set(cover, []);
+      urlToRefs.get(cover).push({ genre, idx: i });
+    }
+  }
+
+  const urlList = [...urlToRefs.keys()];
+  console.log(`[DeepClean] Validating ${urlList.length} unique cover URLs (concurrency=${COVER_CONCURRENCY})…`);
+
+  const urlResults = new Map();  // url → { valid, reason }
+
+  // Process in batches of COVER_CONCURRENCY
+  for (let i = 0; i < urlList.length; i += COVER_CONCURRENCY) {
+    const batch = urlList.slice(i, i + COVER_CONCURRENCY);
+    const results = await Promise.all(batch.map(u => validateCoverUrl(u)));
+    for (let j = 0; j < batch.length; j++) {
+      urlResults.set(batch[j], results[j]);
+    }
+    // Brief progress indicator every 50 URLs
+    if ((i + COVER_CONCURRENCY) % 50 === 0 || i + COVER_CONCURRENCY >= urlList.length) {
+      console.log(`  …checked ${Math.min(i + COVER_CONCURRENCY, urlList.length)} / ${urlList.length}`);
+    }
+  }
+
+  // Mark books whose cover is invalid
+  const invalidCoverBooks = new Set();  // "genre:idx"
+  for (const [url, result] of urlResults.entries()) {
+    if (!result.valid) {
+      for (const { genre, idx } of urlToRefs.get(url)) {
+        invalidCoverBooks.add(`${genre}:${idx}`);
+      }
+    }
+  }
+
+  // Remove books with bad covers from each genre
+  for (const [genre, books] of Object.entries(cache.genres)) {
+    cache.genres[genre] = books.filter((book, idx) => {
+      if (invalidCoverBooks.has(`${genre}:${idx}`)) {
+        const cover = book.coverUrl || book.goodreadsCoverUrl || book.thumbnail || '(none)';
+        const result = urlResults.get(cover) || { reason: 'unknown' };
+        removals.push({ genre, title: book.title, reason: `Bad cover: ${result.reason}` });
+        return false;
+      }
+      return true;
+    });
+  }
+
+  // ── Step 3: cross-genre dedup ─────────────────────────────────────────────
   // Build a map: bookId → [ genre, ... ]  (using the post-validation books)
 
   const bookGenres = new Map();   // bookId → [genre, ...]

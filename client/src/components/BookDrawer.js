@@ -45,38 +45,13 @@ const BookDrawer = ({ book, isOpen, onClose, onRequest }) => {
 
   if (!isOpen || !book) return null;
 
-  const getCoverSrc = (bookData, options = {}) => {
-    const params = new URLSearchParams();
-    const rawCover = options.placeholderOnly ? null : (bookData?.cover || bookData?.coverUrl || bookData?.thumbnail || null);
-
-    if (typeof rawCover === 'string' && rawCover.startsWith('/api/cover')) {
-      return rawCover;
+  const getCoverSrc = (cover) => {
+    if (!cover || typeof cover !== 'string') return null;
+    if (cover.startsWith('/api/')) return cover;
+    if (cover.includes('gr-assets.com')) {
+      return `/api/proxy-image?url=${encodeURIComponent(cover)}`;
     }
-
-    let cover = rawCover;
-    if (typeof rawCover === 'string' && rawCover.startsWith('/api/proxy-image')) {
-      const qs = rawCover.split('?')[1] || '';
-      const upstreamFromProxy = new URLSearchParams(qs).get('url');
-      cover = upstreamFromProxy || null;
-    }
-
-    if (cover && typeof cover === 'string' && /^https?:\/\//i.test(cover)) {
-      params.set('url', cover);
-    }
-    if (bookData?.title) {
-      params.set('title', bookData.title);
-    }
-    if (bookData?.isbn13) {
-      params.set('isbn13', bookData.isbn13);
-    }
-    if (bookData?.isbn) {
-      params.set('isbn', bookData.isbn);
-    }
-    if (bookData?.goodreadsCoverUrl) {
-      params.set('goodreadsUrl', bookData.goodreadsCoverUrl);
-    }
-
-    return `/api/cover?${params.toString()}`;
+    return cover;
   };
 
   const handleRequest = () => {
@@ -113,11 +88,13 @@ const BookDrawer = ({ book, isOpen, onClose, onRequest }) => {
         <div className="drawer-content">
           <div className="book-details">
             <div className="book-cover-large">
-              <img
-                src={getCoverSrc(book, { placeholderOnly: coverImgErrored })}
-                alt={book.title}
-                onError={() => setCoverImgErrored(true)}
-              />
+              {!coverImgErrored && getCoverSrc(book.cover || book.coverUrl || book.thumbnail) && (
+                <img
+                  src={getCoverSrc(book.cover || book.coverUrl || book.thumbnail)}
+                  alt={book.title}
+                  onError={() => setCoverImgErrored(true)}
+                />
+              )}
             </div>
 
             <div className="book-meta">

@@ -7,38 +7,13 @@ const BookRow = ({ category, books, onBookSelect }) => {
   const [showLeftArrow, setShowLeftArrow] = useState(false);
   const [showRightArrow, setShowRightArrow] = useState(true);
 
-  const getCoverSrc = (book, options = {}) => {
-    const params = new URLSearchParams();
-    const rawCover = options.placeholderOnly ? null : (book?.coverUrl || book?.thumbnail || book?.cover || null);
-
-    if (typeof rawCover === 'string' && rawCover.startsWith('/api/cover')) {
-      return rawCover;
+  const getCoverSrc = (cover) => {
+    if (!cover || typeof cover !== 'string') return null;
+    if (cover.startsWith('/api/')) return cover;
+    if (cover.includes('gr-assets.com')) {
+      return `/api/proxy-image?url=${encodeURIComponent(cover)}`;
     }
-
-    let cover = rawCover;
-    if (typeof rawCover === 'string' && rawCover.startsWith('/api/proxy-image')) {
-      const qs = rawCover.split('?')[1] || '';
-      const upstreamFromProxy = new URLSearchParams(qs).get('url');
-      cover = upstreamFromProxy || null;
-    }
-
-    if (cover && typeof cover === 'string' && /^https?:\/\//i.test(cover)) {
-      params.set('url', cover);
-    }
-    if (book?.title) {
-      params.set('title', book.title);
-    }
-    if (book?.isbn13) {
-      params.set('isbn13', book.isbn13);
-    }
-    if (book?.isbn) {
-      params.set('isbn', book.isbn);
-    }
-    if (book?.goodreadsCoverUrl) {
-      params.set('goodreadsUrl', book.goodreadsCoverUrl);
-    }
-
-    return `/api/cover?${params.toString()}`;
+    return cover;
   };
 
   const [rowBooks, setRowBooks] = useState([]);
@@ -115,7 +90,8 @@ const BookRow = ({ category, books, onBookSelect }) => {
       )}
       <div className="book-scroll-container" ref={scrollRef}>
         {rowBooks.map((book) => {
-          const coverSrc = getCoverSrc(book, { placeholderOnly: !!imgErrors[book.id] });
+          const rawCover = book.coverUrl || book.thumbnail || book.cover || null;
+          const coverSrc = imgErrors[book.id] ? null : getCoverSrc(rawCover);
 
           return (
             <div
@@ -124,12 +100,14 @@ const BookRow = ({ category, books, onBookSelect }) => {
               onClick={() => onBookSelect(book)}
             >
               <div className="book-cover">
-                <img
-                  src={coverSrc}
-                  alt={book.title}
-                  loading="lazy"
-                  onError={() => handleImgError(book.id)}
-                />
+                {coverSrc && (
+                  <img
+                    src={coverSrc}
+                    alt={book.title}
+                    loading="lazy"
+                    onError={() => handleImgError(book.id)}
+                  />
+                )}
                 {book.libraryStatus && (
                   <div className="library-badge" data-status={book.libraryStatus}>
                     {book.libraryStatus === 'owned' ? '✓' : ''}

@@ -6,7 +6,7 @@ const rateLimit = require('express-rate-limit');
 const path = require('path');
 const axios = require('axios');
 const crypto = require('crypto');
-const net = require('net');
+
 const { execFile } = require('child_process');
 const prowlarrService = require('./services/prowlarr');
 const qbittorrentService = require('./services/qbittorrent');
@@ -1242,350 +1242,12 @@ app.get('/api/admin/library-search', requireAdmin, async (req, res) => {
   }
 });
 
-// Image proxy / cover helpers
-const COVER_CACHE_CONTROL = 'public, max-age=604800, stale-while-revalidate=86400';
-const COVER_FETCH_TIMEOUT_MS = 10000;
-const COVER_MAX_REDIRECTS = 5;
-const COVER_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-
-function coerceQueryString(value) {
-  if (Array.isArray(value)) return value[0] || '';
-  if (typeof value === 'string') return value;
-  return '';
-}
-
-function cleanIsbn(value) {
-  const cleaned = coerceQueryString(value).replace(/[^0-9Xx]/g, '').trim();
-  return cleaned || null;
-}
-
-function sanitizeCoverTitle(value) {
-  const title = coerceQueryString(value).replace(/\s+/g, ' ').trim();
-  return title.slice(0, 160);
-}
-
 // Upscale Goodreads thumbnail URLs by replacing small size hints (_SY75_, _SX50_, etc.)
 // with a medium-large width (_SX318_) that loads reliably through the image proxy.
 function normalizeGoodreadsCoverUrl(url) {
   if (!url || typeof url !== 'string') return url;
   return url.replace(/\._S[XY]\d+_\./g, '._SX318_.');
 }
-
-function isLocalHostname(hostname) {
-  const host = String(hostname || '').toLowerCase();
-  if (!host) return true;
-  if (host === 'localhost' || host.endsWith('.localhost') || host === '0') return true;
-  if (host === '::1' || host === '[::1]') return true;
-  if (net.isIP(host)) return true;
-  return false;
-}
-
-function isAllowedCoverHost(hostname) {
-  const host = String(hostname || '').toLowerCase();
-  return !!(host) && !isLocalHostname(host);
-}
-
-function getCoverFetchHeaders(hostname) {
-  const host = String(hostname || '').toLowerCase();
-  let referer = 'https://openlibrary.org/';
-  if (host.includes('amazon.')) {
-    referer = 'https://www.amazon.com/';
-  } else if (host.includes('hardcover.app')) {
-    referer = 'https://hardcover.app/';
-  } else if (host.includes('gr-assets.com') || host.includes('goodreads.com')) {
-    referer = 'https://www.goodreads.com/';
-  } else if (host.includes('google')) {
-    referer = 'https://books.google.com/';
-  }
-
-  const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Referer': referer,
-    'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Cache-Control': 'no-cache',
-    'Pragma': 'no-cache'
-  };
-
-  if (host.includes('gr-assets.com') || host.includes('goodreads.com')) {
-    headers['Origin'] = 'https://www.goodreads.com';
-    headers['Accept'] = 'image/webp,image/apng,image/*,*/*;q=0.8';
-  }
-
-  return headers;
-}
-
-function applyCoverCacheHeaders(res, contentType) {
-  res.set('Cache-Control', COVER_CACHE_CONTROL);
-  if (contentType) {
-    res.set('Content-Type', contentType);
-  }
-}
-
-function destroyStreamQuietly(stream) {
-  if (!stream || typeof stream.destroy !== 'function') return;
-  try {
-    stream.destroy();
-  } catch (error) {
-    // ignore cleanup errors
-  }
-}
-
-async function fetchAllowedCoverImageStream(rawUrl) {
-  let currentUrl = rawUrl;
-
-  for (let hop = 0; hop <= COVER_MAX_REDIRECTS; hop++) {
-    let parsed;
-    try {
-      parsed = new URL(currentUrl);
-    } catch (error) {
-      throw new Error('Malformed cover URL');
-    }
-
-    if (!['http:', 'https:'].includes(parsed.protocol)) {
-      throw new Error('Unsupported cover URL protocol');
-    }
-
-    const hostname = (parsed.hostname || '').toLowerCase();
-    if (!isAllowedCoverHost(hostname)) {
-      throw new Error(`Disallowed cover host: ${hostname || 'unknown'}`);
-    }
-
-    let response;
-    try {
-      response = await axios({
-        method: 'GET',
-        url: parsed.toString(),
-        responseType: 'stream',
-        timeout: COVER_FETCH_TIMEOUT_MS,
-        maxRedirects: 0,
-        validateStatus: () => true,
-        maxBodyLength: COVER_MAX_IMAGE_BYTES,
-        headers: getCoverFetchHeaders(hostname)
-      });
-    } catch (error) {
-      if (error.code === 'ERR_FR_MAX_BODY_LENGTH_EXCEEDED') {
-        throw new Error('Cover image too large');
-      }
-      throw error;
-    }
-
-    const status = response.status;
-    if ([301, 302, 303, 307, 308].includes(status)) {
-      const location = response.headers?.location;
-      destroyStreamQuietly(response.data);
-      if (!location) {
-        throw new Error(`Redirect missing location header (${status})`);
-      }
-      currentUrl = new URL(location, parsed).toString();
-      continue;
-    }
-
-    if (status !== 200) {
-      destroyStreamQuietly(response.data);
-      throw new Error(`Cover fetch returned ${status}`);
-    }
-
-    const contentType = String(response.headers?.['content-type'] || '').toLowerCase();
-    if (!contentType.startsWith('image/')) {
-      destroyStreamQuietly(response.data);
-      throw new Error(`Cover fetch returned non-image content-type: ${contentType || 'unknown'}`);
-    }
-
-    const contentLengthHeader = response.headers?.['content-length'];
-    const contentLength = Number.parseInt(contentLengthHeader, 10);
-    if (Number.isFinite(contentLength) && contentLength > COVER_MAX_IMAGE_BYTES) {
-      destroyStreamQuietly(response.data);
-      throw new Error('Cover image exceeds size limit');
-    }
-
-    return { response, finalUrl: parsed.toString() };
-  }
-
-  throw new Error('Too many cover redirects');
-}
-
-function escapeXml(value) {
-  return String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function hashString(value) {
-  const input = String(value || '');
-  let hash = 2166136261;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function wrapPlaceholderTitle(title, maxCharsPerLine = 18, maxLines = 4) {
-  const normalized = (title || 'Untitled').replace(/\s+/g, ' ').trim() || 'Untitled';
-  const words = normalized.split(' ');
-  const lines = [];
-  let current = '';
-
-  const pushCurrent = () => {
-    if (current) {
-      lines.push(current);
-      current = '';
-    }
-  };
-
-  for (const word of words) {
-    if (lines.length >= maxLines) break;
-    if (word.length > maxCharsPerLine) {
-      pushCurrent();
-      for (let i = 0; i < word.length && lines.length < maxLines; i += maxCharsPerLine) {
-        lines.push(word.slice(i, i + maxCharsPerLine));
-      }
-      continue;
-    }
-
-    const next = current ? `${current} ${word}` : word;
-    if (next.length <= maxCharsPerLine) {
-      current = next;
-    } else {
-      pushCurrent();
-      current = word;
-    }
-  }
-
-  if (lines.length < maxLines) {
-    pushCurrent();
-  }
-
-  if (lines.length > maxLines) {
-    lines.length = maxLines;
-  }
-
-  const allWordsPlaced = lines.join(' ').length >= normalized.length;
-  if (!allWordsPlaced && lines.length > 0) {
-    const lastIndex = lines.length - 1;
-    lines[lastIndex] = lines[lastIndex].slice(0, Math.max(0, maxCharsPerLine - 1)).trimEnd() + '…';
-  }
-
-  return lines.length ? lines : ['Untitled'];
-}
-
-function buildCoverPlaceholderSvg(titleInput) {
-  const safeTitle = sanitizeCoverTitle(titleInput) || 'Untitled';
-  const lines = wrapPlaceholderTitle(safeTitle);
-  const seed = hashString(safeTitle.toLowerCase());
-  const hueA = seed % 360;
-  const hueB = (hueA + 38 + (seed % 47)) % 360;
-  const hueC = (hueA + 180) % 360;
-  const spineHue = (hueA + 320) % 360;
-  const lineYs = [122, 154, 186, 218];
-  const textLines = lines.map((line, i) => (
-    `<text x="44" y="${lineYs[i] || (122 + i * 32)}" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22" font-weight="700" fill="rgba(255,255,255,0.96)">${escapeXml(line)}</text>`
-  )).join('');
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450" viewBox="0 0 300 450" role="img" aria-label="Book cover placeholder for ${escapeXml(safeTitle)}">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="hsl(${hueA} 58% 42%)"/>
-      <stop offset="55%" stop-color="hsl(${hueB} 62% 30%)"/>
-      <stop offset="100%" stop-color="hsl(${hueC} 48% 20%)"/>
-    </linearGradient>
-    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="rgba(255,255,255,0.20)"/>
-      <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
-    </linearGradient>
-  </defs>
-  <rect width="300" height="450" rx="14" fill="url(#bg)"/>
-  <rect x="0" y="0" width="28" height="450" fill="hsl(${spineHue} 45% 18% / 0.78)"/>
-  <rect x="28" y="0" width="2" height="450" fill="rgba(255,255,255,0.18)"/>
-  <rect x="0" y="0" width="300" height="115" fill="url(#shine)"/>
-  <circle cx="246" cy="78" r="46" fill="rgba(255,255,255,0.06)"/>
-  <circle cx="262" cy="70" r="18" fill="rgba(255,255,255,0.08)"/>
-  <rect x="42" y="92" width="216" height="164" rx="12" fill="rgba(0,0,0,0.14)" stroke="rgba(255,255,255,0.12)"/>
-  ${textLines}
-  <rect x="42" y="376" width="216" height="18" rx="9" fill="rgba(255,255,255,0.10)"/>
-  <rect x="42" y="404" width="168" height="10" rx="5" fill="rgba(255,255,255,0.08)"/>
-</svg>`;
-}
-
-function sendCoverPlaceholderSvg(res, titleInput) {
-  applyCoverCacheHeaders(res, 'image/svg+xml; charset=utf-8');
-  res.send(buildCoverPlaceholderSvg(titleInput));
-}
-
-function pipeCoverStreamToResponse(res, upstream, logLabel, fallbackTitle = 'Untitled') {
-  applyCoverCacheHeaders(res, upstream.response.headers?.['content-type'] || 'image/jpeg');
-
-  upstream.response.data.on('error', (err) => {
-    console.error(`[${logLabel}] Upstream stream error for ${upstream.finalUrl}:`, err.message);
-    if (!res.headersSent) {
-      sendCoverPlaceholderSvg(res, fallbackTitle);
-    } else if (!res.writableEnded) {
-      res.end();
-    }
-  });
-
-  res.on('close', () => {
-    if (!res.writableEnded) {
-      destroyStreamQuietly(upstream.response.data);
-    }
-  });
-
-  upstream.response.data.pipe(res);
-}
-
-// TEST ROUTE
-app.get('/api/test-route-12345', (req, res) => {
-  console.log('[TEST] Test route was hit!');
-  res.json({ message: 'Test route works!' });
-});
-
-app.get('/api/cover', async (req, res) => {
-  const title = sanitizeCoverTitle(req.query.title) || 'Untitled';
-  const rawUpstreamUrl = coerceQueryString(req.query.url).trim();
-  const upstreamUrl = rawUpstreamUrl ? googleBooksApi.normalizeGoogleCoverUrl(rawUpstreamUrl) : '';
-  const rawGoodreadsUrl = coerceQueryString(req.query.goodreadsUrl).trim();
-  const goodreadsUrl = rawGoodreadsUrl ? normalizeGoodreadsCoverUrl(rawGoodreadsUrl) : '';
-  const isbn13 = cleanIsbn(req.query.isbn13);
-  const isbn = cleanIsbn(req.query.isbn);
-  const openLibraryIsbn = isbn13 || isbn;
-
-  const tryCandidate = async (candidateUrl, label) => {
-    try {
-      const upstream = await fetchAllowedCoverImageStream(candidateUrl);
-      console.log(`[COVER] Serving ${label} image from ${upstream.finalUrl}`);
-      pipeCoverStreamToResponse(res, upstream, 'COVER', title);
-      return true;
-    } catch (error) {
-      console.warn(`[COVER] ${label} fetch failed:`, error.message);
-      return false;
-    }
-  };
-
-  if (upstreamUrl) {
-    const proxied = await tryCandidate(upstreamUrl, 'primary');
-    if (proxied) return;
-  }
-
-  // Secondary: Goodreads cover (if different from primary and available)
-  if (goodreadsUrl && goodreadsUrl !== upstreamUrl) {
-    const proxied = await tryCandidate(goodreadsUrl, 'goodreads');
-    if (proxied) return;
-  }
-
-  if (openLibraryIsbn) {
-    const openLibraryUrl = `https://covers.openlibrary.org/b/isbn/${encodeURIComponent(openLibraryIsbn)}-L.jpg?default=false`;
-    const proxied = await tryCandidate(openLibraryUrl, 'openlibrary');
-    if (proxied) return;
-  }
-
-  console.log('[COVER] Falling back to generated placeholder SVG');
-  return sendCoverPlaceholderSvg(res, title);
-});
 
 // Image proxy route using axios (new implementation as specified)
 app.get('/api/proxy-image', async (req, res) => {
@@ -1618,7 +1280,9 @@ app.get('/api/proxy-image', async (req, res) => {
     'books.google.com',
     'storage.googleapis.com',
     'lh3.googleusercontent.com',
-    'covers.googleapis.com'
+    'covers.googleapis.com',
+    'i.gr-assets.com',
+    'images.gr-assets.com'
   ];
 
   try {
@@ -1632,24 +1296,29 @@ app.get('/api/proxy-image', async (req, res) => {
 
     console.log(`[IMAGE-PROXY] Fetching image: ${url}`);
 
-    // Determine referer based on domain
     const isAmazon = imageUrl.hostname.includes('amazon.com');
-    const referer = isAmazon ? 'https://www.amazon.com/' : 'https://hardcover.app/';
+    const isGoodreads = imageUrl.hostname.includes('gr-assets.com');
+    let referer = 'https://hardcover.app/';
+    if (isAmazon) referer = 'https://www.amazon.com/';
+    if (isGoodreads) referer = 'https://www.goodreads.com/';
+
+    const fetchHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      'Referer': referer,
+      'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache'
+    };
+    if (isGoodreads) fetchHeaders['Origin'] = 'https://www.goodreads.com';
 
     // Use axios to fetch the image with proper browser-like headers
     const response = await axios({
       method: 'GET',
       url: url,
-      responseType: 'stream', // Important: stream the response
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Referer': referer,
-        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
-      },
-      timeout: 10000 // 10 second timeout
+      responseType: 'stream',
+      headers: fetchHeaders,
+      timeout: 10000
     });
 
     // Set appropriate response headers
