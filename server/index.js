@@ -1,11 +1,12 @@
 require('dotenv').config();
+const fs = require('fs');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
 const path = require('path');
 const axios = require('axios');
-const crypto = require('crypto');
+const session = require('express-session');
+const SQLiteStore = require('connect-sqlite3')(session);
 
 const { execFile } = require('child_process');
 const prowlarrService = require('./services/prowlarr');
@@ -24,6 +25,21 @@ const masterBookCache = require('./services/masterBookCache');
 const { mockBooks } = require('./mockData');
 const telegramService = require('./services/telegram');
 const directDownloadService = require('./services/directDownload');
+const userStore = require('./services/userStore');
+const telegramBotNotifier = require('./services/telegramBotNotifier');
+const downloadJobStore = require('./services/downloadJobStore');
+const LibraryOwnershipIndex = require('./services/libraryOwnershipIndex');
+const { DashboardSnapshotService, DASHBOARD_GENRES } = require('./services/dashboardSnapshot');
+const {
+  passport,
+  configurePassport,
+  requireAuth,
+  requireApproved,
+  requireAdmin,
+  buildAuthMeResponse,
+  resolvePostAuthRedirect,
+  needsOnboarding,
+} = require('./auth/passport');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -48,6 +64,21 @@ process.on('uncaughtException', (error) => {
 // Initialize services
 const metadataAggregator = new MetadataAggregator();
 const libraryScanner = new LibraryScanner();
+const ownershipIndex = new LibraryOwnershipIndex({
+  audiobookshelfService,
+  libraryScanner
+});
+const dashboardSnapshotService = new DashboardSnapshotService({
+  discoveryCache,
+  masterBookCache,
+  ownershipIndex
+});
+
+const incrementalRefreshGenres = DASHBOARD_GENRES.map((g) => g.key);
+let incrementalRefreshIndex = 0;
+let incrementalRefreshInFlight = false;
+let nightlyAbsMaintenanceInFlight = false;
+let nightlyAbsMaintenanceLastRunDate = null;
 
 app.use(helmet({
   contentSecurityPolicy: {
@@ -67,97 +98,237 @@ app.use(helmet({
 app.use(cors());
 app.use(express.json());
 
-// Rate limiter for login endpoint - prevents brute force attacks
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // 5 attempts per window
-  message: 'Too many login attempts, please try again later',
-  standardHeaders: true,
-  legacyHeaders: false,
-});
 app.use((req, res, next) => {
   console.log(`[REQ] ${req.method} ${req.url}`);
   next();
 });
 
-// --- Admin auth (PIN-backed signed cookie) ---
-const ADMIN_COOKIE_NAME = 'onyx_admin';
-const ADMIN_SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+// --- Session + Google OAuth auth ---
+app.set('trust proxy', 1);
 
-function getAdminSecret() {
-  return (process.env.ADMIN_PIN || '1905').trim();
-}
+const dataDir = path.join(__dirname, '../data');
+fs.mkdirSync(dataDir, { recursive: true });
 
-function parseCookies(cookieHeader) {
-  const out = {};
-  if (!cookieHeader) return out;
-  cookieHeader.split(';').forEach(part => {
-    const idx = part.indexOf('=');
-    if (idx === -1) return;
-    const key = part.slice(0, idx).trim();
-    const val = part.slice(idx + 1).trim();
-    out[key] = decodeURIComponent(val);
-  });
-  return out;
-}
-
-function signAdminSession(ts, secret) {
-  return crypto.createHmac('sha256', secret).update(String(ts)).digest('hex');
-}
-
-function isValidAdminCookie(value, secret) {
-  if (!value || !secret) return false;
-  const parts = String(value).split('.');
-  if (parts.length !== 2) return false;
-  const [tsStr, sig] = parts;
-  const ts = Number(tsStr);
-  if (!Number.isFinite(ts) || ts <= 0) return false;
-
-  // Expire old sessions
-  const age = Date.now() - ts;
-  if (age < 0 || age > ADMIN_SESSION_MAX_AGE_MS) return false;
-
-  const expected = signAdminSession(ts, secret);
-  // Constant-time compare to reduce leakage
-  const a = Buffer.from(sig);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
-}
-
-function requireAdmin(req, res, next) {
-  const secret = getAdminSecret();
-  if (!secret) {
-    return res.status(500).json({ error: 'ADMIN_PIN not configured on server' });
+const sessionCookieName = 'onyx.sid';
+const sessionSecret = process.env.SESSION_SECRET;
+if (!sessionSecret) {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('[AUTH] SESSION_SECRET is required in production');
   }
+  console.warn('[AUTH] SESSION_SECRET is not set; using insecure development fallback secret');
+}
+const effectiveSessionSecret = sessionSecret || 'change-this-onyx-session-secret';
 
-  // Allow header-based auth for scripts/tools if desired
-  const headerPin = (req.headers['x-admin-pin'] || '').toString().trim();
-  if (headerPin && headerPin === secret) {
-    return next();
-  }
-
-  const cookies = parseCookies(req.headers.cookie);
-  const cookieVal = cookies[ADMIN_COOKIE_NAME];
-  if (isValidAdminCookie(cookieVal, secret)) {
-    return next();
-  }
-
-  return res.status(401).json({ error: 'Admin authentication required' });
+const webhookSecret = process.env.WEBHOOK_SECRET;
+if (!webhookSecret && process.env.NODE_ENV === 'production') {
+  throw new Error('[WEBHOOK] WEBHOOK_SECRET is required in production');
 }
 
-// Check if current user is admin (for client-side UI)
-app.get('/api/user/is-admin', requireAdmin, (req, res) => {
-  // If we reach here, user is authenticated as admin
-  res.json({
-    isAdmin: true
-  });
+const sessionStore = new SQLiteStore({
+  db: 'sessions.db',
+  dir: dataDir,
+  table: 'sessions',
 });
 
+app.use(session({
+  store: sessionStore,
+  name: sessionCookieName,
+  secret: effectiveSessionSecret,
+  resave: false,
+  saveUninitialized: false,
+  proxy: process.env.NODE_ENV === 'production',
+  cookie: {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  },
+}));
 
-// --- Admin auth (PIN-backed signed cookie) ---
+const { googleAuthConfigured } = configurePassport();
+app.use(passport.initialize());
+app.use(passport.session());
+
+function respondGoogleAuthNotConfigured(req, res) {
+  const accept = String(req.headers.accept || '');
+  if (accept.includes('text/html')) {
+    return res.redirect('/login?error=google_oauth_not_configured');
+  }
+  return res.status(503).json({ error: 'Google OAuth is not configured on server' });
+}
+
+function ensureGoogleAuthConfigured(req, res, next) {
+  if (!googleAuthConfigured) {
+    return respondGoogleAuthNotConfigured(req, res);
+  }
+  return next();
+}
+
+function sendLogoutResponse(req, res) {
+  const wantsJson = req.method === 'POST' || String(req.headers.accept || '').includes('application/json');
+  if (wantsJson) {
+    return res.json({ success: true, authenticated: false });
+  }
+  return res.redirect('/login');
+}
+
+function handleLogout(req, res) {
+  const finalize = () => {
+    if (req.session) {
+      req.session.destroy((destroyErr) => {
+        if (destroyErr) {
+          console.error('[AUTH] Session destroy error:', destroyErr);
+        }
+        res.clearCookie(sessionCookieName, {
+          httpOnly: true,
+          sameSite: 'lax',
+          secure: process.env.NODE_ENV === 'production',
+        });
+        return sendLogoutResponse(req, res);
+      });
+      return;
+    }
+
+    res.clearCookie(sessionCookieName, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+    });
+    return sendLogoutResponse(req, res);
+  };
+
+  if (typeof req.logout === 'function') {
+    return req.logout((logoutErr) => {
+      if (logoutErr) {
+        console.error('[AUTH] Logout error:', logoutErr);
+      }
+      return finalize();
+    });
+  }
+
+  return finalize();
+}
+
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+
+app.get('/auth/google', ensureGoogleAuthConfigured, passport.authenticate('google', { scope: ['profile', 'email'] }));
+
+app.get(
+  '/auth/google/callback',
+  ensureGoogleAuthConfigured,
+  passport.authenticate('google', { failureRedirect: '/login?error=oauth_failed' }),
+  (req, res) => {
+    res.redirect(resolvePostAuthRedirect(req.user));
+  }
+);
+
+app.get('/auth/me', (req, res) => {
+  const authenticated = Boolean(req.isAuthenticated && req.isAuthenticated() && req.user);
+  res.json(buildAuthMeResponse(authenticated ? req.user : null));
+});
+
+app.get('/auth/logout', handleLogout);
+app.post('/auth/logout', handleLogout);
+
+// API auth protection (public exceptions are handled here)
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api/')) {
+    return next();
+  }
+
+  if (req.path === '/api/health') {
+    return next();
+  }
+
+  if (req.path === '/api/webhook/download-complete') {
+    return next();
+  }
+
+  if (req.path === '/api/internal/download-progress') {
+    return next();
+  }
+
+  if (req.path === '/api/onboarding') {
+    return requireAuth(req, res, next);
+  }
+
+  // Allow public access to manifest and service worker for PWA installation
+  if (req.path === '/manifest.json' || req.path === '/service-worker.js') {
+    return next();
+  }
+
+  if (req.path.startsWith('/api/admin/') || req.path.startsWith('/api/telegram/') || req.path.startsWith('/api/abs/')) {
+    return requireAdmin(req, res, next);
+  }
+
+  return requireApproved(req, res, next);
+});
 
 // API Routes
+app.get('/api/dashboard', async (req, res) => {
+  const { force = 'false' } = req.query;
+  try {
+    const snapshot = await dashboardSnapshotService.getSnapshot({
+      forceRebuild: force === 'true'
+    });
+
+    res.json(snapshot);
+  } catch (error) {
+    console.error('[Dashboard] Failed to load snapshot:', error.message);
+    res.status(500).json({
+      generatedAt: null,
+      genres: [],
+      rows: {},
+      error: 'Failed to generate dashboard snapshot'
+    });
+  }
+});
+
+app.get('/api/dashboard/genre/:genreKey', async (req, res) => {
+  const { genreKey } = req.params;
+  const count = Math.min(parseInt(req.query.count || '500', 10) || 500, 1000);
+
+  try {
+    const validGenre = (dashboardSnapshotService.snapshot?.genres || [])
+      .some((g) => g.key === genreKey);
+    if (!validGenre && !['romantasy', 'fantasy', 'dark_fantasy', 'cozy_fantasy', 'fairy_tale_retellings', 'scifi', 'post_apocalyptic', 'enemies_to_lovers', 'action_adventure'].includes(genreKey)) {
+      return res.status(404).json({ error: `Unknown genre: ${genreKey}` });
+    }
+
+    await ownershipIndex.ensureFresh();
+    const { selected } = await dashboardSnapshotService.getGenreBooks(genreKey, { maxItems: count });
+    const books = selected.map((book) => {
+      const owned = ownershipIndex.getOwnership(book);
+      const hasAudiobook = Boolean(owned.audiobook);
+      const hasEbook = Boolean(owned.ebook);
+      const allOwned = hasAudiobook && hasEbook;
+      const anyOwned = hasAudiobook || hasEbook;
+
+      return {
+        ...book,
+        libraryStatus: allOwned ? 'owned' : (anyOwned ? 'partial' : 'available'),
+        formatAvailability: {
+          audiobook: hasAudiobook,
+          ebook: hasEbook
+        },
+        ownershipSource: owned.source,
+        ownershipMatchedBy: owned.matchedBy
+      };
+    });
+
+    res.json({
+      genre: genreKey,
+      count: books.length,
+      books
+    });
+  } catch (error) {
+    console.error('[Dashboard] Failed to load genre books:', error.message);
+    res.status(500).json({ error: 'Failed to load genre books' });
+  }
+});
+
 app.get('/api/books/:category', async (req, res) => {
   console.log('[API] Route /api/books/:category hit');
   const { category } = req.params;
@@ -203,12 +374,18 @@ app.get('/api/books/:category', async (req, res) => {
       console.log(`Discovery genre mapping: ${category} -> ${discoveryGenre}`);
       if (discoveryGenre && process.env.GOOGLE_BOOKS_API_KEY) {
         try {
-          const discoveryBooks = await discoveryCache.getRandomizedBooks(discoveryGenre, 50);
-          books = discoveryBooks.map(book => ({
-            id: book.googleBooksId || book.isbn13 || `google-${Math.random()}`,
+          const discoveryBooks = await discoveryCache.getRandomizedBooks(discoveryGenre, 20);
+          books = discoveryBooks.map((book, idx) => ({
+            id: book.googleBooksId || book.isbn13 || `discovery-${(book.title || '').replace(/\s+/g, '-').substring(0, 30)}-${idx}`,
             title: book.title || 'Unknown Title',
             author: Array.isArray(book.authors) ? book.authors.join(', ') : (book.author || 'Unknown Author'),
-            coverUrl: (book.goodreadsCoverUrl ? normalizeGoodreadsCoverUrl(book.goodreadsCoverUrl) : null) || book.thumbnail || book.coverUrl || null,
+            coverUrl: (() => {
+              const raw = (book.goodreadsCoverUrl ? normalizeGoodreadsCoverUrl(book.goodreadsCoverUrl) : null) || book.thumbnail || book.coverUrl || null;
+              if (raw && raw.includes('covers.openlibrary.org')) {
+                return `/api/proxy-image?url=${encodeURIComponent(raw)}`;
+              }
+              return raw;
+            })(),
             thumbnail: book.thumbnail || book.coverUrl || null,
             goodreadsCoverUrl: book.goodreadsCoverUrl ? normalizeGoodreadsCoverUrl(book.goodreadsCoverUrl) : null,
             isbn13: book.isbn13 || null,
@@ -231,12 +408,22 @@ app.get('/api/books/:category', async (req, res) => {
 
       // Overlay ownership status (ABS library) without mutating Hardcover truth.
       books = await Promise.all(books.map(async (book) => {
-        const ownership = libraryScanner.checkOwnership(book.title, book.author);
+        const audiobookOwnership = libraryScanner.checkOwnership(book.title, book.author, 'audiobook');
+        const ebookOwnership = libraryScanner.checkOwnership(book.title, book.author, 'ebook');
+        const hasAudiobook = Boolean(audiobookOwnership.owned);
+        const hasEbook = Boolean(ebookOwnership.owned);
+        const anyOwned = hasAudiobook || hasEbook;
+        const allOwned = hasAudiobook && hasEbook;
+
         return {
           ...book,
-          libraryStatus: ownership.owned ? 'owned' : 'available',
-          exactMatch: ownership.exactMatch,
-          fuzzyMatch: ownership.fuzzyMatch
+          libraryStatus: allOwned ? 'owned' : (anyOwned ? 'partial' : 'available'),
+          formatAvailability: {
+            audiobook: hasAudiobook,
+            ebook: hasEbook
+          },
+          exactMatch: Boolean(audiobookOwnership.exactMatch || ebookOwnership.exactMatch),
+          fuzzyMatch: Boolean(audiobookOwnership.fuzzyMatch || ebookOwnership.fuzzyMatch)
         };
       }));
     }
@@ -296,6 +483,24 @@ app.get('/api/books/:category', async (req, res) => {
       books = deduped.slice(0, 50);
     }
 
+    // Ensure API-level id uniqueness for client rendering/state keys.
+    // Upstream sources can occasionally repeat googleBooksId/isbn across distinct
+    // entries, which leads to React key collisions in list rendering.
+    {
+      const idCounts = new Map();
+      books = books.map((book, idx) => {
+        const baseId = String(book.id || book.googleBooksId || book.isbn13 || `book-${idx}`);
+        const seen = idCounts.get(baseId) || 0;
+        idCounts.set(baseId, seen + 1);
+
+        if (seen === 0) {
+          return { ...book, id: baseId };
+        }
+
+        return { ...book, id: `${baseId}-${seen}` };
+      });
+    }
+
     // Apply search filter if provided (client-side convenience)
     if (search) {
       const q = search.toLowerCase();
@@ -325,7 +530,23 @@ app.get('/api/book/:id', (req, res) => {
 
 // Webhook endpoint for qBittorrent download completion
 app.post('/api/webhook/download-complete', async (req, res) => {
+  const providedWebhookSecret =
+    String(req.headers['x-onyx-webhook-secret'] || '') ||
+    String(req.query.secret || '') ||
+    String(req.body?.secret || '');
+
+  if (!webhookSecret || providedWebhookSecret !== webhookSecret) {
+    return res.status(401).json({ error: 'Invalid webhook credentials' });
+  }
+
   const { hash, name, path: contentPath, tracker, category } = req.body;
+  downloadJobStore.updateByHash(hash, {
+    title: name || null,
+    tracker: tracker || null,
+    status: 'processing',
+    stage: 'processing',
+    progressPct: 100,
+  }, 'Download completed in qBittorrent, starting processing');
 
   console.log(`[WEBHOOK] Download complete: ${name}`);
   console.log(`  Path: ${contentPath} | Tracker: ${tracker} | Category: ${category}`);
@@ -340,8 +561,12 @@ app.post('/api/webhook/download-complete', async (req, res) => {
   };
 
   const sanitizePath = (str) => {
-    // Allow path characters: alphanumeric, spaces, slashes, dots, hyphens, underscores
-    return (str || '').replace(/[^\w\s\/._\-]/g, '');
+    // Keep original path characters (including &, commas, brackets, apostrophes, etc.)
+    // because qBittorrent content paths commonly contain them.
+    // execFile() already prevents command injection; we only reject null bytes.
+    const value = String(str || '');
+    if (value.includes('\0')) return '';
+    return value;
   };
 
   const sanitizedHash = sanitizeString(hash || 'webhook');
@@ -356,10 +581,28 @@ app.post('/api/webhook/download-complete', async (req, res) => {
     timeout: 60000
   }, (error, stdout, stderr) => {
     if (error) {
+      if (error.code === 2) {
+        downloadJobStore.updateByHash(hash, {
+          status: 'failed',
+          stage: 'manual_review_required',
+          error: 'Manual review required before import'
+        }, 'Manual review required before import');
+        return res.json({ success: false, manualReviewRequired: true, output: stdout });
+      }
       console.error(`[WEBHOOK] Processing error:`, error.message);
+      downloadJobStore.updateByHash(hash, {
+        status: 'failed',
+        stage: 'failed',
+        error: error.message,
+      }, `Processing failed: ${error.message}`);
       return res.status(500).json({ error: error.message, output: stdout });
     }
     console.log(`[WEBHOOK] Processing result:`, stdout);
+    downloadJobStore.updateByHash(hash, {
+      status: 'completed',
+      stage: 'completed',
+      error: null,
+    }, 'Processing completed successfully');
     res.json({ success: true, output: stdout });
   });
 });
@@ -367,7 +610,12 @@ app.post('/api/webhook/download-complete', async (req, res) => {
 
 app.post('/api/request/:id', async (req, res) => {
   const { id } = req.params;
-  const { title, author, requestTypes, userId, userEmail, username } = req.body;
+  const { title, author, requestTypes } = req.body;
+  const sessionUser = req.user || {};
+
+  const requestedBy = sessionUser.googleId || sessionUser.email || 'unknown-user';
+  const userEmail = sessionUser.email || null;
+  const username = sessionUser.username || sessionUser.displayName || (sessionUser.email ? sessionUser.email.split('@')[0] : null);
 
   try {
     const request = await dataStore.addRequest({
@@ -376,9 +624,9 @@ app.post('/api/request/:id', async (req, res) => {
       author: author || 'Unknown Author',
       type: 'book',
       requestTypes: requestTypes || { audiobook: false, ebook: true },
-      requestedBy: userId || 'anonymous',
-      userEmail: userEmail,
-      username: username,
+      requestedBy,
+      userEmail,
+      username,
       submittedAt: new Date().toISOString()
     });
 
@@ -390,7 +638,7 @@ app.post('/api/request/:id', async (req, res) => {
       requestId: request.id,
       status: 'pending',
       requestTypes: requestTypes,
-      user: { id: userId, username, email: userEmail }
+      user: { id: requestedBy, username, email: userEmail }
     });
   } catch (error) {
     console.error('Error submitting request:', error);
@@ -902,35 +1150,124 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Admin routes
-app.post('/api/admin/login', loginLimiter, (req, res) => {
-  const { pin } = req.body;
-  const adminPin = getAdminSecret();
+app.post('/api/onboarding', async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
 
-  if ((pin || '').toString().trim() === adminPin) {
-    const ts = Date.now();
-    const sig = signAdminSession(ts, adminPin);
-    const cookieVal = `${ts}.${sig}`;
+    if (req.user.status !== 'pending') {
+      return res.status(403).json({ success: false, message: 'Onboarding is only available for pending users' });
+    }
 
-    res.cookie(ADMIN_COOKIE_NAME, cookieVal, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: ADMIN_SESSION_MAX_AGE_MS
+    const displayName = String(req.body.displayName || '').trim();
+    const username = String(req.body.username || '').trim();
+    const password = String(req.body.password || '').trim();
+    const confirmPassword = String(req.body.confirmPassword || '').trim();
+    const kindleEmail = String(req.body.kindleEmail || '').trim();
+
+    if (!displayName || !username || !password) {
+      return res.status(400).json({ success: false, message: 'Display name, username and password are required' });
+    }
+
+    if (password !== confirmPassword) {
+      return res.status(400).json({ success: false, message: 'Passwords do not match' });
+    }
+
+    const updatedUser = await userStore.completeOnboarding(req.user.googleId, {
+      displayName,
+      username,
+      password,
+      kindleEmail,
     });
 
-    return res.json({
+    // Refresh req.user for this request response consistency.
+    req.user = updatedUser;
+
+    // Best effort notification only.
+    telegramBotNotifier.sendPendingUserNotification(updatedUser).catch(err => {
+      console.error('[ONBOARDING] Telegram notification failed:', err.message || err);
+    });
+
+    res.json({
       success: true,
-      message: 'Admin authenticated'
+      message: 'Onboarding submitted. Awaiting admin approval.',
+      user: userStore.sanitizeForClient(updatedUser),
+      needsOnboarding: false,
     });
+  } catch (error) {
+    console.error('Error completing onboarding:', error);
+    res.status(500).json({ success: false, message: 'Failed to save onboarding details' });
   }
-
-  return res.status(401).json({
-    success: false,
-    message: 'Invalid PIN'
-  });
 });
 
+// Admin routes
+app.get('/api/admin/users', requireAdmin, async (req, res) => {
+  try {
+    const users = await userStore.getAllUsers();
+    res.json({
+      success: true,
+      users: users.map(user => userStore.sanitizeForClient(user)),
+    });
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch users' });
+  }
+});
+
+app.post('/api/admin/users/:googleId/approve', requireAdmin, async (req, res) => {
+  const { googleId } = req.params;
+
+  try {
+    let approvedUser = await userStore.approveUser(googleId);
+
+    let absProvisioning = { attempted: false, success: false, warning: null };
+    const absPassword = userStore.getAbsPassword(approvedUser);
+    if (approvedUser.username && absPassword) {
+      absProvisioning.attempted = true;
+      try {
+        await audiobookshelfService.createUser({
+          username: approvedUser.username,
+          password: absPassword,
+          email: approvedUser.email,
+          type: 'user',
+        });
+
+        approvedUser = await userStore.clearAbsPassword(googleId);
+        absProvisioning.success = true;
+      } catch (absError) {
+        console.error(`[ADMIN USERS] ABS provisioning failed for ${approvedUser.email}:`, absError.message);
+        absProvisioning.warning = `Approved in Onyx, but Audiobookshelf user provisioning failed: ${absError.message}`;
+      }
+    } else {
+      absProvisioning.warning = 'Approved in Onyx, but no stored Audiobookshelf credentials were available for provisioning.';
+    }
+
+    res.json({
+      success: true,
+      user: userStore.sanitizeForClient(approvedUser),
+      absProvisioning,
+    });
+  } catch (error) {
+    console.error('Error approving user:', error);
+    res.status(500).json({ success: false, message: 'Failed to approve user' });
+  }
+});
+
+app.post('/api/admin/users/:googleId/reject', requireAdmin, async (req, res) => {
+  const { googleId } = req.params;
+
+  try {
+    const user = await userStore.rejectUser(googleId);
+    res.json({
+      success: true,
+      user: userStore.sanitizeForClient(user),
+    });
+  } catch (error) {
+    console.error('Error rejecting user:', error);
+    res.status(500).json({ success: false, message: 'Failed to reject user' });
+  }
+});
 
 app.get('/api/admin/requests', requireAdmin, async (req, res) => {
   try {
@@ -1003,39 +1340,110 @@ app.post('/api/admin/search/:requestId', requireAdmin, async (req, res) => {
 
 app.post('/api/admin/download/:requestId', requireAdmin, async (req, res) => {
   const { requestId } = req.params;
-  const { magnetUrl, title, tracker, source, downloadInfo } = req.body;
+  const { magnetUrl, title, tracker, source, downloadInfo, selectedFormat, categoryName } = req.body;
+
+  const inferFormatFromResult = (resultTitle = '', categoryName = '', fallback = null) => {
+    const text = `${resultTitle} ${categoryName}`.toLowerCase();
+    if (/\b(audiobook|audio\s*book|audible|m4b|mp3|aac)\b/.test(text)) return 'audiobook';
+    if (/\b(e-?book|ebook|epub|pdf|mobi|azw|azw3|fb2|djvu)\b/.test(text)) return 'ebook';
+    const normalizedFallback = String(fallback || '').toLowerCase();
+    if (normalizedFallback === 'audiobook' || normalizedFallback === 'ebook') return normalizedFallback;
+    return null;
+  };
 
   try {
+    const request = await dataStore.getRequestById(requestId);
+    const requestTitle = title || request?.title || 'Unknown Title';
+    const requestAuthor = request?.author || 'Unknown Author';
+
+    downloadJobStore.upsertJob(requestId, {
+      title: requestTitle,
+      author: requestAuthor,
+      source: source || 'prowlarr',
+      status: 'queued',
+      stage: 'queued',
+      progressPct: 0,
+      error: null,
+    }, 'Download queued');
+
     let downloadResult;
 
     // Unified download: dispatch based on source
     if (source === 'telegram') {
       // Telegram direct download
       console.log(`[Download] Using Telegram for: ${title}`);
+      downloadJobStore.upsertJob(requestId, {
+        status: 'processing',
+        stage: 'telegram_download',
+      }, 'Starting Telegram direct download');
       const telegramResult = await telegramService.download(downloadInfo || { title });
 
       if (telegramResult.success && telegramResult.filePath) {
         // Process the downloaded file
+        const logicalName = [requestTitle, requestAuthor].filter(Boolean).join(' - ');
         const processResult = await directDownloadService.processDownload(
           telegramResult.filePath,
           telegramResult.fileName,
-          'telegram'
+          'telegram',
+          { logicalName }
         );
         downloadResult = {
           success: processResult.success,
           message: processResult.message,
         };
+        if (processResult.success) {
+          downloadJobStore.upsertJob(requestId, {
+            status: 'completed',
+            stage: 'completed',
+            progressPct: 100,
+          }, 'Telegram download processed successfully');
+        } else {
+          downloadJobStore.upsertJob(requestId, {
+            status: 'failed',
+            stage: 'failed',
+            error: processResult.message || 'Telegram processing failed',
+          }, processResult.message || 'Telegram processing failed');
+        }
       } else {
         downloadResult = telegramResult;
+        downloadJobStore.upsertJob(requestId, {
+          status: 'failed',
+          stage: 'failed',
+          error: telegramResult.message || 'Telegram download failed',
+        }, telegramResult.message || 'Telegram download failed');
       }
     } else {
       // Default: qBittorrent torrent download
       console.log(`[Download] Using qBittorrent for: ${title}`);
       downloadResult = await qbittorrentService.addTorrent(magnetUrl);
+      if (downloadResult.success) {
+        let resolvedHash = downloadResult.hash || null;
+        if (!resolvedHash) {
+          resolvedHash = await qbittorrentService.resolveTorrentHashByName(requestTitle);
+        }
+
+        downloadJobStore.upsertJob(requestId, {
+          status: 'downloading',
+          stage: 'downloading',
+          torrentHash: resolvedHash,
+          progressPct: 0,
+        }, resolvedHash ? `Torrent added (hash ${resolvedHash.slice(0, 8)}...)` : 'Torrent added to qBittorrent');
+      } else {
+        downloadJobStore.upsertJob(requestId, {
+          status: 'failed',
+          stage: 'failed',
+          error: downloadResult.message || 'Failed to add torrent',
+        }, downloadResult.message || 'Failed to add torrent');
+      }
     }
 
     if (downloadResult.success) {
-      await dataStore.updateRequestStatus(requestId, 'approved', {
+      const fulfilledFormat = inferFormatFromResult(
+        title,
+        downloadInfo?.format || categoryName || tracker || source,
+        selectedFormat
+      );
+      const fulfillment = await dataStore.markFormatFulfilled(requestId, fulfilledFormat, {
         magnetUrl: magnetUrl || null,
         title,
         tracker: tracker || source,
@@ -1043,9 +1451,17 @@ app.post('/api/admin/download/:requestId', requireAdmin, async (req, res) => {
         downloadedAt: new Date().toISOString(),
       });
 
+      const remaining = [];
+      if (fulfillment.remainingFormats.audiobook) remaining.push('audiobook');
+      if (fulfillment.remainingFormats.ebook) remaining.push('ebook');
+
       res.json({
         success: true,
-        message: downloadResult.message || 'Download started successfully',
+        message: fulfillment.completed
+          ? (downloadResult.message || 'Download started successfully')
+          : `Download started successfully. Remaining requested format(s): ${remaining.join(', ')}`,
+        requestStatus: fulfillment.request.status,
+        remainingFormats: fulfillment.remainingFormats
       });
     } else {
       res.status(500).json({
@@ -1094,6 +1510,164 @@ app.get('/api/admin/import-log/stats', requireAdmin, async (req, res) => {
     console.error('Error fetching import stats:', error);
     res.status(500).json({ error: 'Failed to fetch stats' });
   }
+});
+
+app.post('/api/admin/import-log/:id/review', requireAdmin, async (req, res) => {
+  try {
+    const entry = importLog.getImportById(req.params.id);
+    if (!entry) {
+      return res.status(404).json({ success: false, message: 'Import not found' });
+    }
+
+    const author = String(req.body?.author || '').trim();
+    const title = String(req.body?.title || '').trim();
+    const seriesRaw = String(req.body?.series || '').trim();
+    const series = seriesRaw || null;
+
+    if (!author || !title) {
+      return res.status(400).json({ success: false, message: 'Author and title are required' });
+    }
+
+    if (!entry.sourcePath || !fs.existsSync(entry.sourcePath)) {
+      return res.status(400).json({ success: false, message: 'Source path no longer exists' });
+    }
+
+    importLog.updateImport(req.params.id, {
+      status: 'review_processing',
+      review: {
+        author,
+        title,
+        series,
+        submittedAt: new Date().toISOString(),
+        submittedBy: req.user?.email || req.user?.username || 'admin'
+      }
+    });
+
+    execFile(
+      'node',
+      ['/app/scripts/process-download.js', entry.torrentHash || 'manual-review', entry.torrentName || title, entry.sourcePath, entry.tracker || 'manual-review', entry.category || 'audiobook'],
+      {
+        timeout: 10 * 60 * 1000,
+        env: {
+          ...process.env,
+          IMPORT_OVERRIDE_JSON: JSON.stringify({
+            forceImport: true,
+            author,
+            title,
+            series
+          })
+        }
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          importLog.updateImport(req.params.id, {
+            status: 'manual_review_required',
+            review: {
+              ...(entry.review || {}),
+              author,
+              title,
+              series,
+              lastError: error.message,
+              stdout: stdout || null,
+              stderr: stderr || null,
+              failedAt: new Date().toISOString()
+            }
+          });
+          return;
+        }
+
+        importLog.updateImport(req.params.id, {
+          status: 'review_completed',
+          review: {
+            ...(entry.review || {}),
+            author,
+            title,
+            series,
+            completedAt: new Date().toISOString()
+          }
+        });
+      }
+    );
+
+    return res.json({ success: true, message: 'Manual review import started' });
+  } catch (error) {
+    console.error('Error processing import review:', error);
+    res.status(500).json({ success: false, message: 'Failed to process manual review' });
+  }
+});
+
+app.get('/api/admin/jobs', requireAdmin, (req, res) => {
+  const { limit = 100 } = req.query;
+  const parsedLimit = Number.parseInt(limit, 10);
+  res.json({
+    success: true,
+    jobs: downloadJobStore.getRecentJobs(Number.isFinite(parsedLimit) ? parsedLimit : 100),
+  });
+});
+
+app.get('/api/admin/jobs/stream', requireAdmin, (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const send = (payload) => {
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  send({ type: 'snapshot', jobs: downloadJobStore.getRecentJobs(100) });
+
+  const onUpdate = (update) => send(update);
+  downloadJobStore.emitter.on('update', onUpdate);
+
+  const keepAlive = setInterval(() => {
+    res.write(': keepalive\n\n');
+  }, 25000);
+
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    downloadJobStore.emitter.off('update', onUpdate);
+    res.end();
+  });
+});
+
+app.post('/api/internal/download-progress', (req, res) => {
+  const providedWebhookSecret = String(req.headers['x-onyx-webhook-secret'] || '');
+  if (!webhookSecret || providedWebhookSecret !== webhookSecret) {
+    return res.status(401).json({ error: 'Invalid internal credentials' });
+  }
+
+  const {
+    hash,
+    title,
+    status,
+    stage,
+    message,
+    progressPct,
+    filesProcessed,
+    filesSkipped,
+    scanTriggered,
+    scanConfirmed,
+    error,
+  } = req.body || {};
+
+  if (!hash) {
+    return res.status(400).json({ error: 'hash is required' });
+  }
+
+  const patch = {};
+  if (title !== undefined) patch.title = title;
+  if (status !== undefined) patch.status = status;
+  if (stage !== undefined) patch.stage = stage;
+  if (progressPct !== undefined) patch.progressPct = progressPct;
+  if (filesProcessed !== undefined) patch.filesProcessed = filesProcessed;
+  if (filesSkipped !== undefined) patch.filesSkipped = filesSkipped;
+  if (scanTriggered !== undefined) patch.scanTriggered = !!scanTriggered;
+  if (scanConfirmed !== undefined) patch.scanConfirmed = !!scanConfirmed;
+  if (error !== undefined) patch.error = error;
+
+  const job = downloadJobStore.updateByHash(hash, patch, message || null);
+  return res.json({ success: true, matched: Boolean(job) });
 });
 
 app.delete('/api/admin/import-log/cleanup', requireAdmin, async (req, res) => {
@@ -1242,6 +1816,48 @@ app.get('/api/admin/library-search', requireAdmin, async (req, res) => {
   }
 });
 
+app.get('/api/admin/library-ownership/stats', requireAdmin, async (req, res) => {
+  try {
+    const stats = await ownershipIndex.getStats();
+    res.json({ success: true, stats });
+  } catch (error) {
+    console.error('Error fetching ownership index stats:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.post('/api/admin/library-ownership/refresh', requireAdmin, async (req, res) => {
+  try {
+    const index = await ownershipIndex.refresh(true);
+    res.json({
+      success: true,
+      generatedAt: index.generatedAt,
+      source: index.source,
+      stats: index.stats
+    });
+  } catch (error) {
+    console.error('Error refreshing ownership index:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.post('/api/admin/dashboard/refresh', requireAdmin, async (req, res) => {
+  try {
+    const snapshot = await dashboardSnapshotService.getSnapshot({ forceRebuild: true });
+    res.json({
+      success: true,
+      generatedAt: snapshot.generatedAt,
+      booksPerGenre: snapshot.booksPerGenre,
+      rows: Object.fromEntries(
+        Object.entries(snapshot.rows || {}).map(([key, books]) => [key, books.length])
+      )
+    });
+  } catch (error) {
+    console.error('Error refreshing dashboard snapshot:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // Upscale Goodreads thumbnail URLs by replacing small size hints (_SY75_, _SX50_, etc.)
 // with a medium-large width (_SX318_) that loads reliably through the image proxy.
 function normalizeGoodreadsCoverUrl(url) {
@@ -1255,16 +1871,8 @@ app.get('/api/proxy-image', async (req, res) => {
   const { url } = req.query;
   console.log('[IMAGE-PROXY] Requested URL:', url);
 
-  // Transparent 1x1 pixel PNG for error fallback
-  const transparentPixel = Buffer.from(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-    'base64'
-  );
-
   if (!url) {
-    // Return transparent pixel instead of error
-    res.set('Content-Type', 'image/png');
-    return res.send(transparentPixel);
+    return res.status(400).json({ error: 'Missing url parameter' });
   }
 
   // Only allow trusted domains for security
@@ -1289,9 +1897,7 @@ app.get('/api/proxy-image', async (req, res) => {
     const imageUrl = new URL(url);
     if (!allowedDomains.includes(imageUrl.hostname)) {
       console.log(`[IMAGE-PROXY] Domain not allowed: ${imageUrl.hostname}`);
-      // Return transparent pixel instead of error
-      res.set('Content-Type', 'image/png');
-      return res.send(transparentPixel);
+      return res.status(403).json({ error: 'Domain not allowed' });
     }
 
     console.log(`[IMAGE-PROXY] Fetching image: ${url}`);
@@ -1367,9 +1973,11 @@ app.get('/api/proxy-image', async (req, res) => {
       })()
     });
 
-    // Return transparent pixel on any error
-    res.set('Content-Type', 'image/png');
-    res.send(transparentPixel);
+    if (!res.headersSent) {
+      res.status(404).json({ error: 'Image fetch failed' });
+    } else {
+      res.end();
+    }
   }
 });
 
@@ -1464,6 +2072,507 @@ app.get('/api/abs/libraries', async (req, res) => {
   }
 });
 
+// --- Share Target Endpoints ---
+// Helper function to fetch and extract metadata from a URL
+async function extractBookMetadataFromUrl(targetUrl, sharedTitle = '', sharedText = '') {
+  const result = {
+    title: '',
+    author: '',
+    coverUrl: '',
+    synopsis: '',
+    isbn: '',
+    sourceUrl: targetUrl,
+    confidence: 'low'
+  };
+
+  try {
+    // Determine source type early for pre-fetch strategies
+    const urlLower = targetUrl.toLowerCase();
+    const isAmazon = urlLower.includes('amazon.') || urlLower.includes('amzn.');
+
+    // Amazon blocks scraping, so extract info from shared text + ASIN lookup instead
+    if (isAmazon) {
+      console.log('[Share] Amazon URL detected, using shared text + ASIN lookup strategy');
+      console.log('[Share] Shared title:', sharedTitle);
+      console.log('[Share] Shared text:', sharedText);
+
+      // Extract ASIN from Amazon URL (often ISBN-10 for books)
+      const asinMatch = targetUrl.match(/\/(?:dp|gp\/product|ASIN)\/([A-Z0-9]{10})/i);
+      const asin = asinMatch ? asinMatch[1] : null;
+      if (asin) {
+        console.log('[Share] Extracted ASIN:', asin);
+        result.isbn = asin;
+      }
+
+      // Parse shared text — Amazon app typically shares:
+      //   "Book Title: Author Name https://..." or
+      //   "Book Title by Author Name https://..." or
+      //   just "Book Title https://..."
+      const textToParse = sharedText || sharedTitle || '';
+      // Remove URL from text first
+      const cleanText = textToParse.replace(/https?:\/\/\S+/g, '').trim();
+
+      if (cleanText) {
+        // Try "Title: Author" pattern (Amazon app format)
+        const colonMatch = cleanText.match(/^(.+?):\s*(.+?)$/);
+        // Try "Title by Author" pattern
+        const byMatch = cleanText.match(/^(.+?)\s+by\s+(.+?)$/i);
+
+        if (colonMatch) {
+          result.title = colonMatch[1].trim();
+          result.author = colonMatch[2].trim();
+        } else if (byMatch) {
+          result.title = byMatch[1].trim();
+          result.author = byMatch[2].trim();
+        } else {
+          // Just use the whole text as title
+          result.title = cleanText;
+        }
+      }
+
+      // Helper: check if a Google Books result roughly matches our parsed title
+      const titleMatches = (gbTitle, parsedTitle) => {
+        if (!gbTitle || !parsedTitle) return false;
+        const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const gt = norm(gbTitle);
+        const pt = norm(parsedTitle);
+        return gt.includes(pt) || pt.includes(gt);
+      };
+
+      // Try Google Books lookup to enrich with cover/synopsis/ISBN-13
+      // Strategy: search by title+author first (most reliable), fall back to ASIN
+      const parsedTitle = result.title;
+      const parsedAuthor = result.author;
+
+      let gbMatch = null;
+
+      // Search by title+author if we have them (more reliable than ASIN)
+      if (parsedTitle) {
+        try {
+          const query = parsedAuthor ? `${parsedTitle} ${parsedAuthor}` : parsedTitle;
+          const gbResults = await googleBooksApi.searchBooks(query, 3);
+          if (gbResults && gbResults.length > 0) {
+            // Find the best match — prefer one whose title matches what we parsed
+            gbMatch = gbResults.find(gb => titleMatches(gb.title, parsedTitle)) || null;
+            console.log('[Share] Google Books title search:', gbMatch ? `matched "${gbMatch.title}"` : 'no good match');
+          }
+        } catch (e) {
+          console.log('[Share] Google Books title search failed:', e.message);
+        }
+      }
+
+      // If title search didn't match well, try ASIN as ISBN
+      if (!gbMatch && asin) {
+        try {
+          const gbResults = await googleBooksApi.searchBooks(`isbn:${asin}`, 1);
+          if (gbResults && gbResults.length > 0) {
+            const gb = gbResults[0];
+            // Only use if title roughly matches (ASIN might map to wrong edition/book)
+            if (!parsedTitle || titleMatches(gb.title, parsedTitle)) {
+              gbMatch = gb;
+              console.log('[Share] Google Books ASIN match:', gb.title);
+            } else {
+              console.log('[Share] Google Books ASIN match rejected (title mismatch):', gb.title, 'vs parsed:', parsedTitle);
+            }
+          }
+        } catch (e) {
+          console.log('[Share] Google Books ASIN lookup failed:', e.message);
+        }
+      }
+
+      // Enrich result from Google Books — but never overwrite parsed title/author
+      if (gbMatch) {
+        result.coverUrl = gbMatch.coverUrl || gbMatch.thumbnail || result.coverUrl;
+        result.synopsis = gbMatch.description || gbMatch.synopsis || result.synopsis;
+        result.isbn = gbMatch.isbn13 || gbMatch.isbn || result.isbn;
+        // Only fill in title/author if we didn't parse them from shared text
+        if (!result.title) result.title = gbMatch.title || '';
+        if (!result.author) result.author = gbMatch.author || (gbMatch.authors && gbMatch.authors.join(', ')) || '';
+        result.confidence = result.title && result.author ? 'high' : 'medium';
+      }
+
+      // If we got at least a title from parsing, that's enough
+      if (result.title) {
+        if (!result.confidence || result.confidence === 'low') {
+          result.confidence = result.author ? 'medium' : 'low';
+        }
+        return result;
+      }
+
+      // Fall through to scraping as last resort
+      console.log('[Share] Amazon: no title from shared text or ASIN, falling through to scrape attempt');
+    }
+
+    // Fetch the page with browser-like headers
+    const response = await axios.get(targetUrl, {
+      timeout: 10000,
+      maxRedirects: 5,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cache-Control': 'no-cache',
+      }
+    });
+
+    const html = response.data;
+    const cheerio = require('cheerio');
+    const $ = cheerio.load(html);
+
+    // Determine source type for site-specific extraction
+    const isGoodreads = urlLower.includes('goodreads.com');
+    const isGoogleBooks = urlLower.includes('books.google.') || urlLower.includes('google.com/books');
+
+    // Try Schema.org JSON-LD first (most reliable)
+    const jsonLdScripts = $('script[type="application/ld+json"]');
+    let schemaData = null;
+
+    jsonLdScripts.each((i, elem) => {
+      try {
+        const data = JSON.parse($(elem).html() || '{}');
+        // Handle @graph arrays
+        const graph = data['@graph'] || [data];
+        for (const item of graph) {
+          if (item['@type'] === 'Book' || item['@type'] === 'Product' ||
+              (Array.isArray(item['@type']) && item['@type'].some(t => t === 'Book' || t === 'Product'))) {
+            schemaData = item;
+            break;
+          }
+        }
+      } catch (e) {
+        // Ignore malformed JSON-LD
+      }
+    });
+
+    if (schemaData) {
+      // Extract from Schema.org
+      result.title = schemaData.name || schemaData.headline || '';
+      result.synopsis = schemaData.description || '';
+
+      // Author extraction
+      if (schemaData.author) {
+        if (typeof schemaData.author === 'string') {
+          result.author = schemaData.author;
+        } else if (schemaData.author.name) {
+          result.author = schemaData.author.name;
+        } else if (Array.isArray(schemaData.author)) {
+          result.author = schemaData.author.map(a => typeof a === 'string' ? a : a.name).filter(Boolean).join(', ');
+        }
+      }
+
+      // ISBN extraction
+      if (schemaData.isbn) {
+        result.isbn = String(schemaData.isbn).replace(/[^0-9X]/gi, '');
+      } else if (schemaData.identifier) {
+        const isbnId = schemaData.identifier.find(id => id.propertyID === 'ISBN' || id.name === 'ISBN');
+        if (isbnId) {
+          result.isbn = String(isbnId.value).replace(/[^0-9X]/gi, '');
+        }
+      }
+
+      // Image extraction
+      if (schemaData.image) {
+        if (typeof schemaData.image === 'string') {
+          result.coverUrl = schemaData.image;
+        } else if (schemaData.image.url) {
+          result.coverUrl = schemaData.image.url;
+        } else if (schemaData.image.contentUrl) {
+          result.coverUrl = schemaData.image.contentUrl;
+        }
+      }
+
+      result.confidence = 'high';
+    }
+
+    // If no Schema.org data or missing fields, try Open Graph
+    if (!result.title) {
+      result.title = $('meta[property="og:title"]').attr('content') || '';
+    }
+    if (!result.synopsis) {
+      result.synopsis = $('meta[property="og:description"]').attr('content') || '';
+    }
+    if (!result.coverUrl) {
+      result.coverUrl = $('meta[property="og:image"]').attr('content') || '';
+    }
+
+    // Site-specific extractors
+    if (isGoodreads) {
+      // Goodreads specific extraction
+      if (!result.title) {
+        result.title = $('h1[data-testid="bookTitle"]').text().trim() ||
+                      $('h1#bookTitle').text().trim() ||
+                      $('h1.bookTitle').text().trim() ||
+                      $('h1').first().text().trim();
+      }
+
+      if (!result.author) {
+        result.author = $('a[href*="/author/show/"]').first().text().trim() ||
+                       $('.authorName').first().text().trim() ||
+                       $('span[itemprop="author"]').text().trim();
+      }
+
+      if (!result.synopsis) {
+        result.synopsis = $('#description span:last-child').text().trim() ||
+                         $('[data-testid="description"]').text().trim() ||
+                         $('div[itemprop="description"]').text().trim();
+      }
+
+      if (!result.coverUrl) {
+        result.coverUrl = $('img[data-testid="coverImage"]').attr('src') ||
+                         $('#coverImage').attr('src') ||
+                         $('img[itemprop="image"]').attr('src');
+      }
+
+      // Extract ISBN from page
+      if (!result.isbn) {
+        const isbnText = $('div[itemprop="isbn"]').text().trim() ||
+                        $('dt:contains("ISBN")').next('dd').text().trim() ||
+                        $('.infoBoxRowItem:contains("ISBN")').text().trim();
+        if (isbnText) {
+          const isbnMatch = isbnText.match(/[\d-]{10,17}/);
+          if (isbnMatch) {
+            result.isbn = isbnMatch[0].replace(/-/g, '');
+          }
+        }
+      }
+
+      // Goodreads has reliable data
+      if (result.title && result.author) {
+        result.confidence = 'high';
+      }
+    }
+
+    if (isAmazon) {
+      // Amazon specific extraction
+      if (!result.title) {
+        result.title = $('#productTitle').text().trim() ||
+                      $('h1.a-size-large span').text().trim() ||
+                      $('h1[data-automation-id="title"]').text().trim();
+      }
+
+      if (!result.author) {
+        result.author = $('.author a').first().text().trim() ||
+                       $('#bylineInfo .author a').first().text().trim() ||
+                       $('a[href*="field-author"]').first().text().trim();
+      }
+
+      if (!result.synopsis) {
+        result.synopsis = $('#bookDescription_feature_div').text().trim() ||
+                         $('#productDescription').text().trim() ||
+                         $('.a-expander-content').first().text().trim();
+      }
+
+      if (!result.coverUrl) {
+        result.coverUrl = $('#imgBlkFront').attr('src') ||
+                         $('#landingImage').attr('src') ||
+                         $('img[data-a-dynamic-image]').first().attr('src');
+      }
+
+      // Amazon ISBN extraction
+      if (!result.isbn) {
+        const detailsText = $('#detailBullets_feature_div').text() ||
+                           $('#productDetailsTable').text() ||
+                           $('.a-section:contains("ISBN")').text();
+        const isbnMatch = detailsText.match(/ISBN-?1?3?:?\s*([\d-]{10,17})/i);
+        if (isbnMatch) {
+          result.isbn = isbnMatch[1].replace(/-/g, '');
+        }
+      }
+
+      if (result.title) {
+        result.confidence = result.author ? 'high' : 'medium';
+      }
+    }
+
+    if (isGoogleBooks) {
+      // Google Books specific extraction
+      if (!result.title) {
+        result.title = $('h1').first().text().trim() ||
+                      $('.book-title').text().trim();
+      }
+
+      if (!result.author) {
+        result.author = $('.book-author').text().trim() ||
+                       $('a[href*="q=author:"]').first().text().trim();
+      }
+
+      if (!result.synopsis) {
+        result.synopsis = $('#synopsis').text().trim() ||
+                         $('.book-description').text().trim();
+      }
+
+      // Extract ISBN from Google Books URL
+      if (!result.isbn) {
+        const vidMatch = targetUrl.match(/[?&]vid=([^&]+)/);
+        if (vidMatch) {
+          result.isbn = vidMatch[1];
+        }
+      }
+
+      if (result.title) {
+        result.confidence = 'medium';
+      }
+    }
+
+    // Fallback to standard meta tags if still missing
+    if (!result.title) {
+      result.title = $('title').text().trim() || sharedTitle;
+      // Clean up title (remove site name suffixes)
+      result.title = result.title.replace(/\s*[\|\-–—]\s*(Goodreads|Amazon|Google Books).*$/i, '');
+    }
+
+    if (!result.synopsis) {
+      result.synopsis = $('meta[name="description"]').attr('content') || sharedText;
+    }
+
+    // Clean up extracted data
+    result.title = result.title.trim();
+    result.author = result.author.trim();
+    result.synopsis = result.synopsis.trim();
+
+    // Remove "by Author Name" from title if present
+    if (result.title && result.author) {
+      result.title = result.title.replace(new RegExp(`\\s*by\\s+${result.author.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'), '');
+    }
+
+    // Limit synopsis length
+    if (result.synopsis.length > 2000) {
+      result.synopsis = result.synopsis.substring(0, 2000) + '...';
+    }
+
+    return result;
+
+  } catch (error) {
+    console.error('Error extracting metadata from URL:', error.message);
+
+    // Return basic info from shared data if extraction fails
+    return {
+      title: sharedTitle || '',
+      author: '',
+      coverUrl: '',
+      synopsis: sharedText || '',
+      isbn: '',
+      sourceUrl: targetUrl,
+      confidence: 'low'
+    };
+  }
+}
+
+// POST /api/share/resolve - Extract book metadata from shared URL
+app.post('/api/share/resolve', async (req, res) => {
+  try {
+    const { url, title, text } = req.body;
+
+    if (!url) {
+      return res.status(400).json({
+        success: false,
+        message: 'URL is required'
+      });
+    }
+
+    console.log(`[SHARE] Resolving metadata for: ${url}`);
+
+    const metadata = await extractBookMetadataFromUrl(url, title || '', text || '');
+
+    console.log(`[SHARE] Extracted metadata - Title: "${metadata.title}", Author: "${metadata.author}", Confidence: ${metadata.confidence}`);
+
+    res.json(metadata);
+
+  } catch (error) {
+    console.error('[SHARE] Error resolving share:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to resolve book metadata',
+      error: error.message
+    });
+  }
+});
+
+// POST /api/share/request - Submit a book request from share
+app.post('/api/share/request', async (req, res) => {
+  try {
+    const {
+      title,
+      author,
+      synopsis,
+      isbn,
+      coverUrl,
+      sourceUrl,
+      requestTypes = { audiobook: false, ebook: true }
+    } = req.body;
+
+    if (!title || !title.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Book title is required'
+      });
+    }
+
+    const sessionUser = req.user || {};
+    const requestedBy = sessionUser.googleId || sessionUser.email || 'anonymous-share';
+    const userEmail = sessionUser.email || null;
+    const username = sessionUser.username || sessionUser.displayName || (sessionUser.email ? sessionUser.email.split('@')[0] : 'Anonymous User');
+
+    // Generate a unique ID for this shared book request
+    const bookId = `share-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+    const request = await dataStore.addRequest({
+      bookId: bookId,
+      title: title.trim(),
+      author: author || 'Unknown Author',
+      type: 'book',
+      requestTypes: requestTypes,
+      requestedBy,
+      userEmail,
+      username,
+      submittedAt: new Date().toISOString(),
+      sourceUrl: sourceUrl || null,
+      synopsis: synopsis || null,
+      isbn: isbn || null,
+      coverUrl: coverUrl || null,
+      source: 'share_target'
+    });
+
+    console.log(`[SHARE] Book request submitted: "${title}" by "${author}" from ${sourceUrl || 'unknown source'} by user ${username} (${userEmail || 'anonymous'})`);
+
+    // Send Telegram notification if configured
+    if (telegramBotNotifier && telegramBotNotifier.sendNotification) {
+      try {
+        const formatText = [];
+        if (requestTypes.audiobook) formatText.push('Audiobook');
+        if (requestTypes.ebook) formatText.push('Ebook');
+
+        await telegramBotNotifier.sendNotification({
+          type: 'book_request',
+          title: title.trim(),
+          author: author || 'Unknown Author',
+          formats: formatText.join(' + ') || 'Ebook',
+          requestedBy: username || userEmail || 'Anonymous User',
+          source: sourceUrl ? new URL(sourceUrl).hostname : 'Shared via PWA'
+        });
+      } catch (notifyError) {
+        console.error('[SHARE] Failed to send Telegram notification:', notifyError.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Book request submitted successfully',
+      requestId: request.id,
+      status: 'pending',
+      requestTypes: requestTypes,
+      user: { id: requestedBy, username, email: userEmail }
+    });
+
+  } catch (error) {
+    console.error('[SHARE] Error submitting request:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to submit request'
+    });
+  }
+});
+
 // --- Global Error Handler ---
 // Must be AFTER all routes and BEFORE app.listen
 app.use((err, req, res, next) => {
@@ -1494,19 +2603,93 @@ app.use('/api/*', (req, res) => {
 
 // Serve static files from React build in production
 if (process.env.NODE_ENV === 'production') {
-  app.use((req, res, next) => {
-    if (req.path.startsWith('/api/')) {
-      return next();
-    }
-    express.static(path.join(__dirname, '../client/build'))(req, res, next);
+  const clientBuildDir = path.join(__dirname, '../client/build');
+  const serveStatic = express.static(clientBuildDir, { index: false });
+
+  // Serve manifest and service worker without auth (required for PWA)
+  app.get('/manifest.json', (req, res) => {
+    res.sendFile(path.join(clientBuildDir, 'manifest.json'));
   });
 
-  app.get('*', (req, res) => {
-    // Skip API routes - they should have been handled by now
+  app.get('/service-worker.js', (req, res) => {
+    res.sendFile(path.join(clientBuildDir, 'service-worker.js'));
+  });
+
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/') || req.path.startsWith('/auth/')) {
+      return next();
+    }
+    if (req.path === '/' || req.path.endsWith('.html')) {
+      return next();
+    }
+    // Skip manifest and service worker (already handled above)
+    if (req.path === '/manifest.json' || req.path === '/service-worker.js') {
+      return next();
+    }
+    return serveStatic(req, res, next);
+  });
+
+  app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api/')) {
       return res.status(404).json({ error: 'API endpoint not found' });
     }
-    res.sendFile(path.join(__dirname, '../client/build/index.html'));
+
+    if (req.path === '/health') {
+      return res.status(200).json({ status: 'ok' });
+    }
+
+    if (req.path.startsWith('/auth/')) {
+      return next();
+    }
+
+    // Share page should always be served directly (preserves query params from PWA share target)
+    if (req.path === '/share') {
+      return res.sendFile(path.join(clientBuildDir, 'index.html'));
+    }
+
+    if (req.path === '/login') {
+      const isAuthed = Boolean(req.isAuthenticated && req.isAuthenticated() && req.user);
+      if (!isAuthed) {
+        return res.sendFile(path.join(clientBuildDir, 'index.html'));
+      }
+      return res.redirect(resolvePostAuthRedirect(req.user));
+    }
+
+    const isAuthed = Boolean(req.isAuthenticated && req.isAuthenticated() && req.user);
+    if (!isAuthed) {
+      return res.redirect('/login');
+    }
+
+    if (req.user.status === 'rejected') {
+      if (req.path !== '/awaiting-approval') {
+        return res.redirect('/awaiting-approval?status=rejected');
+      }
+      return res.sendFile(path.join(clientBuildDir, 'index.html'));
+    }
+
+    if (req.user.status === 'pending' && needsOnboarding(req.user)) {
+      if (req.path !== '/onboarding') {
+        return res.redirect('/onboarding');
+      }
+      return res.sendFile(path.join(clientBuildDir, 'index.html'));
+    }
+
+    if (req.user.status !== 'approved') {
+      if (req.path !== '/awaiting-approval') {
+        return res.redirect('/awaiting-approval');
+      }
+      return res.sendFile(path.join(clientBuildDir, 'index.html'));
+    }
+
+    if ((req.path === '/onboarding' || req.path === '/awaiting-approval' || req.path === '/login')) {
+      return res.redirect('/');
+    }
+
+    if (req.path.startsWith('/admin') && req.user.role !== 'admin') {
+      return res.redirect('/');
+    }
+
+    return res.sendFile(path.join(clientBuildDir, 'index.html'));
   });
 } else {
   // Development catch-all route to prevent 404 on page refresh
@@ -1516,6 +2699,73 @@ if (process.env.NODE_ENV === 'production') {
       message: 'This is a development server. Use the React dev server on port 3000 for frontend routes.',
       path: req.path
     });
+  });
+}
+
+async function runIncrementalCacheTick() {
+  if (incrementalRefreshInFlight) {
+    console.log('[SCHEDULER] Incremental refresh skipped: previous run still in progress');
+    return;
+  }
+
+  incrementalRefreshInFlight = true;
+  const genre = incrementalRefreshGenres[incrementalRefreshIndex % incrementalRefreshGenres.length];
+  incrementalRefreshIndex += 1;
+
+  try {
+    console.log(`[SCHEDULER] Incremental refresh starting for genre: ${genre}`);
+    const result = await discoveryCache.refreshGenre(genre);
+    console.log(
+      `[SCHEDULER] Incremental refresh completed for ${genre}: +${result.booksAdded}, total=${result.totalInGenre}`
+    );
+
+    await ownershipIndex.refresh(true);
+    await dashboardSnapshotService.getSnapshot({ forceRebuild: true });
+    console.log('[SCHEDULER] Ownership index and dashboard snapshot refreshed');
+  } catch (error) {
+    console.error(`[SCHEDULER] Incremental refresh failed for ${genre}:`, error.message);
+  } finally {
+    incrementalRefreshInFlight = false;
+  }
+}
+
+function getLocalDateKey(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function maybeRunNightlyAbsMaintenance() {
+  const enabled = String(process.env.NIGHTLY_ABS_MAINTENANCE_ENABLED || 'true').toLowerCase() !== 'false';
+  if (!enabled || nightlyAbsMaintenanceInFlight) return;
+
+  const targetHour = Math.max(0, Math.min(23, parseInt(process.env.NIGHTLY_ABS_MAINTENANCE_HOUR || '3', 10) || 3));
+  const targetMinute = Math.max(0, Math.min(59, parseInt(process.env.NIGHTLY_ABS_MAINTENANCE_MINUTE || '30', 10) || 30));
+  const now = new Date();
+  const dateKey = getLocalDateKey(now);
+  const pastWindow = now.getHours() > targetHour || (now.getHours() === targetHour && now.getMinutes() >= targetMinute);
+
+  if (!pastWindow) return;
+  if (nightlyAbsMaintenanceLastRunDate === dateKey) return;
+
+  nightlyAbsMaintenanceInFlight = true;
+  console.log(`[SCHEDULER] Nightly ABS maintenance starting for ${dateKey} at ${now.toISOString()}`);
+
+  execFile('node', ['/app/scripts/abs-maintenance.js'], { timeout: 30 * 60 * 1000 }, (error, stdout, stderr) => {
+    if (stdout) {
+      console.log(stdout.trim());
+    }
+    if (stderr) {
+      console.error(stderr.trim());
+    }
+    if (error) {
+      console.error('[SCHEDULER] Nightly ABS maintenance failed:', error.message);
+    } else {
+      nightlyAbsMaintenanceLastRunDate = dateKey;
+      console.log('[SCHEDULER] Nightly ABS maintenance completed');
+    }
+    nightlyAbsMaintenanceInFlight = false;
   });
 }
 
@@ -1567,10 +2817,28 @@ app.listen(PORT, () => {
     // Preload library scan in background
     try {
       console.log('[INIT] Starting library scan...');
+      await libraryScanner.scanLibrary(true);
       const stats = await libraryScanner.getLibraryStats();
-      console.log(`[INIT] Library scan complete: ${stats.totalItems || 0} items`);
+      console.log(`[INIT] Library scan complete: ${stats.total || 0} items`);
     } catch (error) {
       console.log(`[INIT] Library scan failed: ${error.message}`);
+    }
+
+    try {
+      console.log('[INIT] Building ownership index...');
+      const ownership = await ownershipIndex.refresh(true);
+      console.log(`[INIT] Ownership index ready: ${ownership.stats?.totalRecords || 0} records (${ownership.source})`);
+    } catch (error) {
+      console.log(`[INIT] Ownership index build failed: ${error.message}`);
+    }
+
+    try {
+      console.log('[INIT] Building dashboard snapshot...');
+      const snapshot = await dashboardSnapshotService.getSnapshot({ forceRebuild: true });
+      const rowCount = Object.keys(snapshot.rows || {}).length;
+      console.log(`[INIT] Dashboard snapshot ready: ${rowCount} genre rows`);
+    } catch (error) {
+      console.log(`[INIT] Dashboard snapshot build failed: ${error.message}`);
     }
 
     // Initialize Telegram service
@@ -1621,4 +2889,52 @@ app.listen(PORT, () => {
 
     console.log('[INIT] Background initialization complete');
   });
+
+  // Poll qBittorrent periodically to surface live progress in admin UI.
+  setInterval(async () => {
+    try {
+      const torrents = await qbittorrentService.getTorrents();
+      downloadJobStore.updateFromQbitTorrents(torrents);
+    } catch (error) {
+      // Best-effort only; do not spam logs.
+    }
+  }, 5000);
+
+  // Incremental cache growth scheduler (one genre per tick, rotating).
+  const schedulerEnabled = String(process.env.INCREMENTAL_REFRESH_ENABLED || 'true').toLowerCase() !== 'false';
+  const schedulerEveryMinutes = Math.max(60, parseInt(process.env.INCREMENTAL_REFRESH_EVERY_MINUTES || '360', 10) || 360);
+  const schedulerInitialDelayMinutes = Math.max(5, parseInt(process.env.INCREMENTAL_REFRESH_INITIAL_DELAY_MINUTES || '30', 10) || 30);
+
+  if (schedulerEnabled) {
+    console.log(
+      `[SCHEDULER] Incremental refresh enabled: every ${schedulerEveryMinutes}m, initial delay ${schedulerInitialDelayMinutes}m`
+    );
+
+    setTimeout(() => {
+      runIncrementalCacheTick().catch((error) => {
+        console.error('[SCHEDULER] Initial incremental refresh failed:', error.message);
+      });
+    }, schedulerInitialDelayMinutes * 60 * 1000);
+
+    setInterval(() => {
+      runIncrementalCacheTick().catch((error) => {
+        console.error('[SCHEDULER] Incremental refresh tick failed:', error.message);
+      });
+    }, schedulerEveryMinutes * 60 * 1000);
+  } else {
+    console.log('[SCHEDULER] Incremental refresh disabled via INCREMENTAL_REFRESH_ENABLED');
+  }
+
+  const nightlyEnabled = String(process.env.NIGHTLY_ABS_MAINTENANCE_ENABLED || 'true').toLowerCase() !== 'false';
+  const nightlyHour = Math.max(0, Math.min(23, parseInt(process.env.NIGHTLY_ABS_MAINTENANCE_HOUR || '3', 10) || 3));
+  const nightlyMinute = Math.max(0, Math.min(59, parseInt(process.env.NIGHTLY_ABS_MAINTENANCE_MINUTE || '30', 10) || 30));
+  if (nightlyEnabled) {
+    console.log(`[SCHEDULER] Nightly ABS maintenance enabled at ${String(nightlyHour).padStart(2, '0')}:${String(nightlyMinute).padStart(2, '0')} (server local time)`);
+    maybeRunNightlyAbsMaintenance();
+    setInterval(() => {
+      maybeRunNightlyAbsMaintenance();
+    }, 5 * 60 * 1000);
+  } else {
+    console.log('[SCHEDULER] Nightly ABS maintenance disabled via NIGHTLY_ABS_MAINTENANCE_ENABLED');
+  }
 });

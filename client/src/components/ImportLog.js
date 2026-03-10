@@ -1,14 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { FileCheck, AlertCircle, HardDrive, Trash2, Home, Shield, Database } from 'lucide-react';
+import { useNavigate, Link } from 'react-router-dom';
+import { FileCheck, AlertCircle, HardDrive, Trash2, Shield, Database, ClipboardCheck } from 'lucide-react';
 import toast from 'react-hot-toast';
 import Header from './Header';
+import { useAuth } from '../context/AuthContext';
 import './AdminPanel.css';
 
 const ImportLog = () => {
+    const { user, logout } = useAuth();
+    const navigate = useNavigate();
     const [imports, setImports] = useState([]);
     const [stats, setStats] = useState(null);
     const [loading, setLoading] = useState(true);
     const [filter, setFilter] = useState('all'); // all, success, failed
+    const [reviewDrafts, setReviewDrafts] = useState({});
+    const [submittingId, setSubmittingId] = useState(null);
 
     useEffect(() => {
         fetchImports();
@@ -20,6 +26,19 @@ const ImportLog = () => {
             const response = await fetch('/api/admin/import-log');
             const data = await response.json();
             setImports(data);
+            setReviewDrafts((prev) => {
+                const next = { ...prev };
+                data.forEach((imp) => {
+                    if (!next[imp.id]) {
+                        next[imp.id] = {
+                            author: imp.review?.author || '',
+                            title: imp.review?.title || imp.torrentName || '',
+                            series: imp.review?.series || ''
+                        };
+                    }
+                });
+                return next;
+            });
             setLoading(false);
         } catch (error) {
             console.error('Error fetching imports:', error);
@@ -58,14 +77,61 @@ const ImportLog = () => {
         if (filter === 'all') return true;
         if (filter === 'success') return imp.status === 'success';
         if (filter === 'failed') return imp.status === 'failed' || imp.status === 'partial';
+        if (filter === 'review') return imp.status === 'manual_review_required' || imp.status === 'review_processing' || imp.status === 'review_completed';
         return true;
     });
+
+    const handleDraftChange = (id, field, value) => {
+        setReviewDrafts((prev) => ({
+            ...prev,
+            [id]: {
+                ...(prev[id] || {}),
+                [field]: value
+            }
+        }));
+    };
+
+    const handleReviewSubmit = async (imp) => {
+        const draft = reviewDrafts[imp.id] || {};
+        if (!draft.author?.trim() || !draft.title?.trim()) {
+            toast.error('Author and title are required');
+            return;
+        }
+
+        try {
+            setSubmittingId(imp.id);
+            const response = await fetch(`/api/admin/import-log/${imp.id}/review`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    author: draft.author.trim(),
+                    title: draft.title.trim(),
+                    series: draft.series?.trim() || ''
+                })
+            });
+            const result = await response.json();
+            if (!response.ok || !result.success) {
+                throw new Error(result.message || 'Manual review failed');
+            }
+            toast.success('Manual review import started');
+            fetchImports();
+            fetchStats();
+        } catch (error) {
+            console.error('Error submitting manual review:', error);
+            toast.error(error.message || 'Failed to submit manual review');
+        } finally {
+            setSubmittingId(null);
+        }
+    };
 
     const getStatusBadge = (status) => {
         const colors = {
             success: '#10b981',
             failed: '#ef4444',
-            partial: '#f59e0b'
+            partial: '#f59e0b',
+            manual_review_required: '#ef4444',
+            review_processing: '#2563eb',
+            review_completed: '#10b981'
         };
         return (
             <span style={{
@@ -101,23 +167,26 @@ const ImportLog = () => {
         <div className="app">
             <Header
                 showSearch={false}
-                onLogoClick={() => window.location.href = '/'}
+                user={user}
+                onAdminClick={() => navigate('/admin')}
+                onLogout={logout}
+                onLogoClick={() => navigate('/')}
             />
 
             <main className="admin-main">
                 <div className="admin-nav">
-                    <a href="/admin" className="nav-tab">
+                    <Link to="/admin" className="nav-tab">
                         <Shield size={18} />
                         Requests
-                    </a>
-                    <a href="/admin/imports" className="nav-tab active">
+                    </Link>
+                    <Link to="/admin/imports" className="nav-tab active">
                         <img src="/import-log-icon.png" alt="" style={{ height: '18px', width: 'auto' }} />
                         Import Log
-                    </a>
-                    <a href="/admin/cache" className="nav-tab">
+                    </Link>
+                    <Link to="/admin/cache" className="nav-tab">
                         <Database size={18} />
                         Cache
-                    </a>
+                    </Link>
                 </div>
                 <div className="import-log-container">
                     <div className="import-log-header">
@@ -152,6 +221,13 @@ const ImportLog = () => {
                                 </div>
                             </div>
                             <div className="stat-card">
+                                <ClipboardCheck size={24} color="#f59e0b" />
+                                <div>
+                                    <div className="stat-value">{stats.manualReview || 0}</div>
+                                    <div className="stat-label">Needs Review</div>
+                                </div>
+                            </div>
+                            <div className="stat-card">
                                 <HardDrive size={24} color="#3b82f6" />
                                 <div>
                                     <div className="stat-value">{stats.mamImports}</div>
@@ -179,6 +255,12 @@ const ImportLog = () => {
                             onClick={() => setFilter('failed')}
                         >
                             Failed
+                        </button>
+                        <button
+                            className={filter === 'review' ? 'filter-active' : ''}
+                            onClick={() => setFilter('review')}
+                        >
+                            Review
                         </button>
                     </div>
 
@@ -226,6 +308,43 @@ const ImportLog = () => {
                                                 ))}
                                             </div>
                                         )}
+                                        {(imp.status === 'manual_review_required' || imp.status === 'review_processing' || imp.status === 'review_completed') && (
+                                            <div className="manual-review-panel">
+                                                <strong>Manual Review</strong>
+                                                <div className="manual-review-grid">
+                                                    <input
+                                                        type="text"
+                                                        placeholder="Author"
+                                                        value={reviewDrafts[imp.id]?.author || ''}
+                                                        onChange={(e) => handleDraftChange(imp.id, 'author', e.target.value)}
+                                                        disabled={imp.status === 'review_processing' || submittingId === imp.id}
+                                                    />
+                                                    <input
+                                                        type="text"
+                                                        placeholder="Title"
+                                                        value={reviewDrafts[imp.id]?.title || ''}
+                                                        onChange={(e) => handleDraftChange(imp.id, 'title', e.target.value)}
+                                                        disabled={imp.status === 'review_processing' || submittingId === imp.id}
+                                                    />
+                                                    <input
+                                                        type="text"
+                                                        placeholder="Series (optional)"
+                                                        value={reviewDrafts[imp.id]?.series || ''}
+                                                        onChange={(e) => handleDraftChange(imp.id, 'series', e.target.value)}
+                                                        disabled={imp.status === 'review_processing' || submittingId === imp.id}
+                                                    />
+                                                </div>
+                                                <div className="manual-review-actions">
+                                                    <button
+                                                        className="search-button"
+                                                        onClick={() => handleReviewSubmit(imp)}
+                                                        disabled={imp.status === 'review_processing' || submittingId === imp.id}
+                                                    >
+                                                        {imp.status === 'review_processing' || submittingId === imp.id ? 'Processing…' : 'Import With Review'}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 ))
                             )}
@@ -238,4 +357,3 @@ const ImportLog = () => {
 };
 
 export default ImportLog;
-

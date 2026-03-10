@@ -29,6 +29,28 @@ class ImportLogService {
         return log.imports.find(imp => imp.id === id);
     }
 
+    updateImport(id, patch = {}) {
+        try {
+            const log = this.getLog();
+            const idx = log.imports.findIndex(imp => imp.id === id);
+            if (idx === -1) {
+                return { success: false, message: 'Import not found' };
+            }
+
+            log.imports[idx] = {
+                ...log.imports[idx],
+                ...patch,
+                updatedAt: new Date().toISOString()
+            };
+
+            fs.writeFileSync(this.logFile, JSON.stringify(log, null, 2));
+            return { success: true, import: log.imports[idx] };
+        } catch (error) {
+            console.error('Error updating import:', error);
+            return { success: false, message: error.message };
+        }
+    }
+
     clearOldImports(daysToKeep = 30) {
         try {
             const log = this.getLog();
@@ -53,12 +75,14 @@ class ImportLogService {
         const total = log.imports.length;
         const successful = log.imports.filter(i => i.status === 'success').length;
         const failed = log.imports.filter(i => i.status === 'failed' || i.status === 'partial').length;
+        const manualReview = log.imports.filter(i => i.status === 'manual_review_required').length;
         const mamImports = log.imports.filter(i => i.operation === 'hardlink').length;
 
         return {
             total,
             successful,
             failed,
+            manualReview,
             mamImports,
             successRate: total > 0 ? ((successful / total) * 100).toFixed(1) : 0
         };
