@@ -100,6 +100,37 @@ class ProwlarrService {
     }
   }
 
+  async testConnection() {
+    if (!this.apiKey) {
+      return {
+        success: false,
+        message: 'PROWLARR_API_KEY is not configured'
+      };
+    }
+
+    try {
+      const response = await axios.get(
+        `${this.baseURL}/api/v1/system/status`,
+        {
+          headers: {
+            'X-Api-Key': this.apiKey
+          },
+          timeout: 10000
+        }
+      );
+
+      return {
+        success: response.status === 200,
+        message: response.status === 200 ? 'Connected to Prowlarr' : `Unexpected status ${response.status}`
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message
+      };
+    }
+  }
+
   formatSize(bytes) {
     if (!bytes) return 'Unknown';
 

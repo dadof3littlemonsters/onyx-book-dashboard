@@ -1512,6 +1512,65 @@ app.get('/api/admin/import-log/stats', requireAdmin, async (req, res) => {
   }
 });
 
+app.get('/api/admin/pipeline-status', requireAdmin, async (req, res) => {
+  try {
+    const [abs, qbit, prowlarr, indexers] = await Promise.all([
+      audiobookshelfService.testConnection().catch(error => ({ success: false, message: error.message })),
+      qbittorrentService.testConnection().catch(error => ({ success: false, message: error.message })),
+      prowlarrService.testConnection().catch(error => ({ success: false, message: error.message })),
+      prowlarrService.getIndexers().catch(() => [])
+    ]);
+
+    const telegram = telegramService.getStatus();
+    const mamIndexer = (Array.isArray(indexers) ? indexers : []).find((indexer) => {
+      const haystack = [
+        indexer?.name,
+        indexer?.implementation,
+        indexer?.definitionName,
+        indexer?.description
+      ].filter(Boolean).join(' ').toLowerCase();
+      return haystack.includes('myanonamouse') || /\bmam\b/.test(haystack);
+    });
+
+    res.json({
+      success: true,
+      checkedAt: new Date().toISOString(),
+      services: {
+        audiobookshelf: {
+          ok: !!abs?.success,
+          label: 'Audiobookshelf',
+          detail: abs?.message || null
+        },
+        qbittorrent: {
+          ok: !!qbit?.success,
+          label: 'qBittorrent',
+          detail: qbit?.message || null
+        },
+        prowlarr: {
+          ok: !!prowlarr?.success,
+          label: 'Prowlarr',
+          detail: prowlarr?.message || null
+        },
+        telegram: {
+          ok: telegram?.authState === 'ready',
+          label: 'Telegram',
+          detail: telegram?.authState || 'unknown'
+        },
+        mam: {
+          ok: Boolean(prowlarr?.success && mamIndexer && mamIndexer.enable !== false),
+          label: 'MAM',
+          detail: mamIndexer
+            ? `${mamIndexer.name || mamIndexer.definitionName || 'Indexer'}${mamIndexer.enable === false ? ' disabled' : ' enabled'}`
+            : 'No MAM indexer detected in Prowlarr'
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching pipeline status:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 app.post('/api/admin/import-log/:id/review', requireAdmin, async (req, res) => {
   try {
     const entry = importLog.getImportById(req.params.id);
